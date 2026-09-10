@@ -1,13 +1,12 @@
 import asyncio
 import logging
-import signal
 import sys
 import time
 from datetime import datetime
 
 from aiohttp import web
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.filters import CommandStart, Command
+from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -16,7 +15,7 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    ReplyKeyboardRemove
+    TelegramObject
 )
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
 
@@ -45,17 +44,89 @@ class GreetingForm(StatesGroup):
     entering_sender = State()
 
 # -------------------------------------------------------------
-# 3. KLAVIATURALAR (INTERAKTIV TUGMALAR)
+# 3. MAJBURIY OBUNA MATNI VA KLAVIATURASI
+# -------------------------------------------------------------
+SUBSCRIPTION_TEXT = (
+    "⚠️ <b>Botdan to'liq va bepul foydalanish uchun rasmiy kanalimizga a'zo bo'ling!</b>\n\n"
+    f"👉 Kanal: <b>{config.CHANNEL_ID}</b>\n\n"
+    "Kanalga a'zo bo'lganingizdan so'ng, quyidagi <b>«✅ Obunani Tekshirish»</b> tugmasini bosing:"
+)
+
+def get_subscription_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📢 Kanalga A'zo Bo'lish", url=config.CHANNEL_URL)
+            ],
+            [
+                InlineKeyboardButton(text="✅ Obunani Tekshirish", callback_data="check_subscription")
+            ]
+        ]
+    )
+
+async def check_user_subscription(bot: Bot, user_id: int) -> bool:
+    """Foydalanuvchining ko'rsatilgan kanalda bor-yo'qligini tekshiradi."""
+    try:
+        member = await bot.get_chat_member(chat_id=config.CHANNEL_ID, user_id=user_id)
+        if member.status in ("creator", "administrator", "member", "restricted"):
+            return True
+        return False
+    except Exception as e:
+        logger.warning(f"Kanal a'zoligini tekshirishda xatolik ({user_id}): {e}")
+        # Agar kanalga bot admin qilib qo'shilmagan bo'lsa, xatolik chiqishi mumkin
+        return False
+
+# -------------------------------------------------------------
+# 4. MAJBURIY OBUNA MIDDLEWARE (Doimiy va qat'iy tekshiruv)
+# Agar foydalanuvchi kanaldan chiqib ketsa, bot darhol yana to'xtatadi!
+# -------------------------------------------------------------
+class MandatorySubscriptionMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        bot: Bot = data.get("bot")
+        user = data.get("event_from_user")
+        
+        # Agar tekshirish tugmasi bosilgan bo'lsa, handlerni o'ziga ruxsat beramiz
+        if isinstance(event, CallbackQuery) and event.data == "check_subscription":
+            return await handler(event, data)
+        
+        if user and bot:
+            is_sub = await check_user_subscription(bot, user.id)
+            if not is_sub:
+                if isinstance(event, Message):
+                    await event.answer(
+                        SUBSCRIPTION_TEXT,
+                        parse_mode="HTML",
+                        reply_markup=get_subscription_keyboard()
+                    )
+                    return
+                elif isinstance(event, CallbackQuery):
+                    await event.answer("⚠️ Botdan foydalanish uchun avval kanalga a'zo bo'ling!", show_alert=True)
+                    try:
+                        await event.message.answer(
+                            SUBSCRIPTION_TEXT,
+                            parse_mode="HTML",
+                            reply_markup=get_subscription_keyboard()
+                        )
+                    except Exception:
+                        pass
+                    return
+        
+        return await handler(event, data)
+
+# -------------------------------------------------------------
+# 5. ASOSIY MENYU KLAVIATURALARI (100% BEPUL)
 # -------------------------------------------------------------
 def get_main_menu_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🎭 Tabrik Yaratish", callback_data="start_create"),
-                InlineKeyboardButton(text="💎 VIP Personajlar", callback_data="vip_characters")
+                InlineKeyboardButton(text="🎭 Tabrik Yaratish (Bepul)", callback_data="start_create")
             ],
             [
-                InlineKeyboardButton(text="ℹ️ Bot Haqida", callback_data="about_bot"),
+                InlineKeyboardButton(text="🌟 Barcha Personajlar", callback_data="all_characters"),
+                InlineKeyboardButton(text="ℹ️ Bot Haqida", callback_data="about_bot")
+            ],
+            [
                 InlineKeyboardButton(text="⚡ Server Holati", callback_data="server_status")
             ]
         ]
@@ -66,7 +137,7 @@ def get_characters_keyboard():
     for key, data in CHARACTERS.items():
         buttons.append([
             InlineKeyboardButton(
-                text=f"{data['name']}",
+                text=f"{data['name']} (Bepul)",
                 callback_data=f"char_{key}"
             )
         ])
@@ -92,16 +163,39 @@ def get_result_keyboard(share_text: str):
                 )
             ],
             [
-                InlineKeyboardButton(text="🔄 Yana Boshqa Tabrik", callback_data="start_create"),
-                InlineKeyboardButton(text="⭐ VIP Qutlov Olish", callback_data="vip_characters")
+                InlineKeyboardButton(text="🔄 Yana Boshqa Tabrik Yaratish", callback_data="start_create")
+            ],
+            [
+                InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
             ]
         ]
     )
 
 # -------------------------------------------------------------
-# 4. BOT ROUTER VA HANDLERLAR
+# 6. HANDLERLAR
 # -------------------------------------------------------------
 router = Router()
+
+# Middlewareni barcha xabar va tugmalarga biriktirish
+router.message.middleware(MandatorySubscriptionMiddleware())
+router.callback_query.middleware(MandatorySubscriptionMiddleware())
+
+@router.callback_query(F.data == "check_subscription")
+async def check_subscription_callback(call: CallbackQuery, bot: Bot, state: FSMContext):
+    """Foydalanuvchi 'Obunani Tekshirish' tugmasini bosganda tekshirish."""
+    is_sub = await check_user_subscription(bot, call.from_user.id)
+    if is_sub:
+        await call.answer("✅ Rahmat! Obuna tasdiqlandi. Xush kelibsiz!", show_alert=True)
+        await state.clear()
+        welcome_text = (
+            f"Assalomu alaykum, <b>{call.from_user.first_name}</b>! 🎭\n\n"
+            "<b>«Parodiya Tabrik & Mashhurlar Qutlovi»</b> botiga xush kelibsiz!\n\n"
+            "Barcha personajlar va tabriklar siz uchun <b>100% BEPUL</b>! 🎉\n\n"
+            "Quyidagi tugmani bosing va do'stingiz uchun ajoyib qutlov tayyorlang:"
+        )
+        await call.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=get_main_menu_keyboard())
+    else:
+        await call.answer("❌ Siz hali kanalga a'zo bo'lmadingiz! Iltimos, kanalga obuna bo'ling.", show_alert=True)
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -109,10 +203,9 @@ async def cmd_start(message: Message, state: FSMContext):
     welcome_text = (
         f"Assalomu alaykum, <b>{message.from_user.first_name}</b>! 🎭\n\n"
         "<b>«Parodiya Tabrik & Mashhurlar Qutlovi»</b> botiga xush kelibsiz!\n\n"
-        "Ushbu bot orqali do'stlaringiz va yaqinlaringizni O'zbekistondagi mashhur "
-        "personajlar (Boyvachcha, GAI xodimi, Bozorchi, Shoir) tilida qutlab, ularning "
-        "kayfiyatini 100% ga ko'tarishingiz mumkin! 😄\n\n"
-        "Quyidagi tugmani bosing va ajoyib tabrik yarating:"
+        "Ushbu bot orqali yaqinlaringizni O'zbekistondagi mashhur "
+        "personajlar tilida mutlaqo <b>BEPUL</b> qutlashingiz mumkin! 😄\n\n"
+        "Quyidagi tugmani bosing va tabrik yarating:"
     )
     await message.answer(welcome_text, parse_mode="HTML", reply_markup=get_main_menu_keyboard())
 
@@ -125,15 +218,35 @@ async def back_to_menu_handler(call: CallbackQuery, state: FSMContext):
     )
     await call.answer()
 
+@router.callback_query(F.data == "all_characters")
+async def all_characters_handler(call: CallbackQuery):
+    text = (
+        "🌟 <b>Mavjud Barcha Personajlar (100% Bepul):</b>\n\n"
+        "1. 💰 <b>Saxiy Boyvachcha Otaxon</b> — Dollar sochadigan saxiy millioner uslubida\n"
+        "2. 👮 <b>Katta Leytenant (GAI)</b> — Qat'iy nazorat va protokol hazillari bilan\n"
+        "3. 🍏 <b>Malika / O'rikzor Savdogari</b> — 'O'zimni yaqinimga beradigan narxda' uslubi\n"
+        "4. 📜 <b>Xalq Donishmandi & Shoir</b> — Qofiyali, kulgili va falsafiy baytlar\n"
+        "5. 🕶️ <b>Xorijdagi Shef (Don Karleone)</b> — Jiddiy va katta doiradagi nufuzli biznesmen\n\n"
+        "<i>Barcha personajlardan cheksiz va bepul foydalanishingiz mumkin!</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎭 Tabrik Yaratish", callback_data="start_create")],
+            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]
+        ]
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
 @router.callback_query(F.data == "about_bot")
 async def about_bot_handler(call: CallbackQuery):
     text = (
         "<b>ℹ️ Loyiha Haqida:</b>\n\n"
-        "• <b>Texnologiya:</b> Python 3.11, aiogram 3.x, aiohttp\n"
-        "• <b>Xosting:</b> 24/7 Bepul Bulutli Cloud Konteyner\n"
-        "• <b>Rejim:</b> Crash-Proof Watchdog + Anti-Sleep Health Server\n"
-        "• <b>RAM sarfi:</b> Atigi 28-35 MB!\n\n"
-        "Yaqinlaringizga unutilmas kulgi va quvonch ulashing! 🎁"
+        "• <b>Xizmat:</b> 100% Bepul va Cheksiz\n"
+        f"• <b>Rasmiy Kanal:</b> {config.CHANNEL_ID}\n"
+        "• <b>Xosting:</b> 24/7 Bepul Bulutli Cloud Server\n"
+        "• <b>Rejim:</b> Crash-Proof Watchdog + Anti-Sleep Health Server\n\n"
+        "Yaqinlaringizga quvonch va tabassum ulashing! 🎁"
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]]
@@ -148,43 +261,19 @@ async def server_status_handler(call: CallbackQuery):
     minutes, seconds = divmod(remainder, 60)
     
     status_text = (
-        "<b>⚡ Bulutli Server Holati (Health Check):</b>\n\n"
+        "<b>⚡ Bulutli Server Holati:</b>\n\n"
         "🟢 <b>Status:</b> 24/7 Onlayn (Active)\n"
         f"⏱ <b>Uptime:</b> {hours} soat, {minutes} daqiqa, {seconds} soniya\n"
-        f"🌐 <b>Tinglanayotgan Port:</b> <code>{config.PORT}</code>\n"
-        "🛡️ <b>Watchdog:</b> Faol (Crash-Proof)\n"
+        f"📢 <b>Kanal Monitoringi:</b> {config.CHANNEL_ID} (Faol)\n"
+        "🛡️ <b>Crash-Proof Watchdog:</b> Faol\n"
         "💤 <b>Anti-Sleep Pinger:</b> Faol\n\n"
-        "<i>Server noutbukingiz o'chiq bo'lsa ham kechayu-kunduz to'xtovsiz ishlaydi!</i>"
+        "<i>Server noutbukingiz o'chiq bo'lsa ham 24/7 to'xtovsiz ishlaydi!</i>"
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]]
     )
     await call.message.edit_text(status_text, parse_mode="HTML", reply_markup=kb)
     await call.answer()
-
-@router.callback_query(F.data == "vip_characters")
-async def vip_characters_handler(call: CallbackQuery):
-    vip_text = (
-        "💎 <b>VIP Eksklyuziv Tabriklar & Monetizatsiya:</b>\n\n"
-        "Hozir siz barcha 5 ta standart personajdan <b>bepul</b> foydalanishingiz mumkin!\n\n"
-        "✨ <b>VIP To'plamga nimalar kiradi?</b>\n"
-        "1. Maxsus Ovozli Audio Qutlovlar (Audio Parodiya)\n"
-        "2. Do'stingizning shaxsiy sirlari va hazillarini qo'shish\n"
-        "3. Telegram Stars / Click / Payme to'lov tizimi integratsiyasi\n\n"
-        f"💰 Narxi: <b>{config.VIP_PRICE:,} so'm</b> / bir martalik eksklyuziv tabrik."
-    )
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Click / Payme orqali to'lov (Demo)", callback_data="demo_pay")],
-            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]
-        ]
-    )
-    await call.message.edit_text(vip_text, parse_mode="HTML", reply_markup=kb)
-    await call.answer()
-
-@router.callback_query(F.data == "demo_pay")
-async def demo_pay_handler(call: CallbackQuery):
-    await call.answer("To'lov tizimi muvaffaqiyatli sinovdan o'tdi! (Demo rejim)", show_alert=True)
 
 # --- TABRIK YARATISH BOSQICHLARI (FSM) ---
 
@@ -193,7 +282,7 @@ async def start_create_handler(call: CallbackQuery, state: FSMContext):
     await state.set_state(GreetingForm.choosing_character)
     text = (
         "🎭 <b>1-Qadam: Kimning nomidan tabrik tayyorlaymiz?</b>\n\n"
-        "Quyidagi qiziqarli personajlardan birini tanlang:"
+        "Quyidagi personajlardan birini tanlang (barchasi bepul):"
     )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_characters_keyboard())
     await call.answer()
@@ -263,7 +352,7 @@ async def sender_entered_handler(message: Message, state: FSMContext):
     )
     
     await message.answer("✨ <b>Tabrik tayyorlanmoqda... 3, 2, 1...</b>", parse_mode="HTML")
-    await asyncio.sleep(1) # Kichik realistik animatsiya effekti
+    await asyncio.sleep(1)
     
     await message.answer(
         greeting_text,
@@ -271,48 +360,39 @@ async def sender_entered_handler(message: Message, state: FSMContext):
     )
 
 # -------------------------------------------------------------
-# 5. KEEP-ALIVE AIOHTTP VEB-SERVER (Render / Koyeb talabi)
+# 7. KEEP-ALIVE AIOHTTP VEB-SERVER (Render / Koyeb talabi)
 # -------------------------------------------------------------
 async def handle_root(request: web.Request) -> web.Response:
-    """Asosiy sahifa - Render xostingi uchun 200 OK qaytaradi."""
     return web.json_response({
         "status": "alive",
         "service": "Telegram Parody Greeting Bot",
-        "timestamp": datetime.utcnow().isoformat(),
+        "channel": config.CHANNEL_ID,
         "bot": "running"
     })
 
 async def handle_health(request: web.Request) -> web.Response:
-    """UptimeRobot yoki Cron-job.org ushbu endpointga har 5 daqiqada so'rov yuboradi."""
     uptime_sec = int(time.time() - START_TIME)
     return web.json_response({
         "status": "healthy",
         "uptime_seconds": uptime_sec,
-        "bot_status": "active",
+        "channel": config.CHANNEL_ID,
         "anti_sleep": "enabled"
     })
 
 def create_web_server() -> web.Application:
-    """Yengil aiohttp veb server dasturi (RAM tejamkor)."""
     app = web.Application()
     app.router.add_get("/", handle_root)
     app.router.add_get("/health", handle_health)
     return app
 
 # -------------------------------------------------------------
-# 6. CRASH-PROOF BOT WATCHDOG SIKLI
+# 8. CRASH-PROOF BOT WATCHDOG SIKLI
 # -------------------------------------------------------------
 async def run_bot_polling_watchdog(bot: Bot, dp: Dispatcher):
-    """
-    Agar internet uzilsa yoki Telegram API vaqtincha javob bermasa,
-    ushbu sikl dasturni yiqilishdan (crash bo'lishdan) asraydi va 
-    avtomatik ravishda qayta ulanadi.
-    """
     retry_delay = 5
     while True:
         try:
             logger.info("🤖 Telegram Bot Polling ishga tushirilmoqda...")
-            # Eskirgan navbatdagi update'larni tozalash
             await bot.delete_webhook(drop_pending_updates=True)
             await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
         except (TelegramNetworkError, TelegramAPIError) as api_err:
@@ -328,18 +408,17 @@ async def run_bot_polling_watchdog(bot: Bot, dp: Dispatcher):
             await asyncio.sleep(retry_delay)
 
 # -------------------------------------------------------------
-# 7. ASOSIY ENTRYPOINT (MAIN SIKL)
+# 9. ASOSIY ENTRYPOINT (MAIN SIKL)
 # -------------------------------------------------------------
 async def main():
     logger.info("🚀 Ilova ishga tushirilmoqda...")
 
-    # Bot va Dispatcher yaratish
     if not config.BOT_TOKEN:
         logger.error("❌ XATO: BOT_TOKEN aniqlanmadi! Iltimos, .env faylini to'ldiring.")
         return
 
     bot = Bot(token=config.BOT_TOKEN)
-    storage = MemoryStorage() # Stateless va kam RAM sarfi
+    storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
 
@@ -351,7 +430,7 @@ async def main():
     site = web.TCPSite(runner, host=config.HOST, port=config.PORT)
     await site.start()
     logger.info(f"🌐 Keep-Alive Veb-Server {config.HOST}:{config.PORT} manzilida tinglamoqda.")
-    logger.info("✅ Health endpoint: http://localhost:{}/health".format(config.PORT))
+    logger.info(f"📢 Majburiy kanal a'zoligi faol: {config.CHANNEL_ID}")
 
     # 2. Crash-proof Bot Watchdog Pollingni ishga tushirish
     try:
