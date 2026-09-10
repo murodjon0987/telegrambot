@@ -291,7 +291,7 @@ async def log_activity(user_id: int, username: Optional[str], full_name: str, ac
     """Foydalanuvchining har bir harakatini bazaga yozish."""
     await asyncio.to_thread(_log_activity_sync, user_id, username, full_name, action, details)
 
-def _save_greeting_sync(user_id: int, category: str, character: str, recipient_name: str, profession: str, sender_name: str, text: str):
+def _save_greeting_sync(user_id: int, category: str, character: str, recipient_name: str, profession: str, sender_name: str, text: str) -> int:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with _get_connection() as conn:
         cursor = conn.cursor()
@@ -299,16 +299,32 @@ def _save_greeting_sync(user_id: int, category: str, character: str, recipient_n
             INSERT INTO greetings (user_id, category, character, recipient_name, profession, sender_name, generated_text, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (user_id, category, character, recipient_name, profession, sender_name, text, now_str))
+        greeting_id = cursor.lastrowid or 0
         
         # Tabrik yaratganda +2 ball beriladi!
         cursor.execute("""
             UPDATE users SET greetings_count = greetings_count + 1, points = points + 2, last_active = ? WHERE user_id = ?
         """, (now_str, user_id))
         conn.commit()
+        return greeting_id
 
-async def save_greeting(user_id: int, category: str, character: str, recipient_name: str, profession: str, sender_name: str, text: str):
+async def save_greeting(user_id: int, category: str, character: str, recipient_name: str, profession: str, sender_name: str, text: str) -> int:
     """Yaratilgan tabrikni arxivlash va foydalanuvchi hisoblagichini oshirish."""
-    await asyncio.to_thread(_save_greeting_sync, user_id, category, character, recipient_name, profession, sender_name, text)
+    return await asyncio.to_thread(_save_greeting_sync, user_id, category, character, recipient_name, profession, sender_name, text)
+
+def _get_greeting_by_id_sync(greeting_id: int) -> Optional[Dict[str, Any]]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, user_id, category, character, recipient_name, profession, sender_name, generated_text, created_at
+            FROM greetings WHERE id = ?
+        """, (greeting_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+async def get_greeting_by_id(greeting_id: int) -> Optional[Dict[str, Any]]:
+    """ID bo'yicha bitta tabrikni olish."""
+    return await asyncio.to_thread(_get_greeting_by_id_sync, greeting_id)
 
 def _get_user_greetings_sync(user_id: int, limit: int = 5) -> List[Dict[str, Any]]:
     with _get_connection() as conn:

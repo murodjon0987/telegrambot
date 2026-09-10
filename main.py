@@ -19,6 +19,8 @@ from aiogram.types import (  # pyrefly: ignore [missing-import] # type: ignore
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
     TelegramObject,
     FSInputFile,
     InlineQuery,
@@ -30,6 +32,7 @@ from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramF
 
 import config
 import database
+import media_generator
 from characters import (
     CHARACTERS, CATEGORIES, PROFESSIONS, generate_custom_message,
     QUIZ_QUESTIONS, QUIZ_RESULTS, CERTIFICATES, generate_certificate_text,
@@ -76,6 +79,9 @@ class CertificateForm(StatesGroup):
     entering_recipient = State()
     entering_sender = State()
 
+class AudioPaymentForm(StatesGroup):
+    uploading_check = State()
+
 class AdminBroadcastForm(StatesGroup):
     entering_message = State()
     confirming = State()
@@ -121,7 +127,6 @@ async def check_user_subscription(bot: Bot, user_id: int) -> bool:
 # 4. MIDDLEWARE LAR (Throttling, Ban, Tracking, Majburiy Obuna)
 # -------------------------------------------------------------
 class ThrottlingMiddleware(BaseMiddleware):
-    """Foydalanuvchilar tugmalarni haddan tashqari tez bosib spam qilmasligi uchun (0.5 soniya cheklov)."""
     def __init__(self, limit: float = 0.5):
         self.limit = limit
         self.last_actions = {}
@@ -148,7 +153,6 @@ class ThrottlingMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 class BanCheckMiddleware(BaseMiddleware):
-    """Bloklangan foydalanuvchilarning so'rovlarini to'xtatish."""
     async def __call__(self, handler, event: TelegramObject, data: dict):
         user = data.get("event_from_user")
         if user and not config.is_admin(user.id):
@@ -162,7 +166,6 @@ class BanCheckMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 class UserTrackingMiddleware(BaseMiddleware):
-    """Har bir kelgan xabar va tugma bosilishida foydalanuvchini bazada yangilaydi."""
     async def __call__(self, handler, event: TelegramObject, data: dict):
         user = data.get("event_from_user")
         if user:
@@ -207,9 +210,34 @@ class MandatorySubscriptionMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 # -------------------------------------------------------------
-# 5. MENYU KLAVIATURALARI
+# 5. MENYU KLAVIATURALARI (Pastki doimiy va Inline)
 # -------------------------------------------------------------
+def get_reply_main_keyboard(user_id: int = 0):
+    """Pastdagi ko'zga ko'rinadigan doimiy ReplyKeyboard tugmalari."""
+    keyboard = [
+        [
+            KeyboardButton(text="🎭 Tabrik Yaratish"),
+            KeyboardButton(text="🧠 Qaysi Personajsan?")
+        ],
+        [
+            KeyboardButton(text="📜 Parodiya Sertifikat"),
+            KeyboardButton(text="🎲 Omad Barabani")
+        ],
+        [
+            KeyboardButton(text="🔮 Kunlik Bashorat"),
+            KeyboardButton(text="🏆 Ballar & Profilim")
+        ],
+        [
+            KeyboardButton(text="📂 Mening Tabriklarim"),
+            KeyboardButton(text="🌟 Barcha Personajlar")
+        ]
+    ]
+    if config.is_admin(user_id):
+        keyboard.append([KeyboardButton(text="👑 Admin Panel")])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, is_persistent=True)
+
 def get_main_menu_keyboard(user_id: int = 0):
+    """Xabar ichidagi interaktiv InlineKeyboardMarkup."""
     buttons = [
         [
             InlineKeyboardButton(text="🎭 Tabrik Yaratish (Bepul)", callback_data="start_create")
@@ -304,7 +332,7 @@ def get_professions_keyboard():
     buttons.append([InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_result_keyboard(share_text: str, full_message: str = ""):
+def get_result_keyboard(share_text: str, full_message: str = "", greeting_id: int = 0):
     text_to_share = full_message if full_message else share_text
     encoded_text = urllib.parse.quote(text_to_share)
     telegram_share_url = f"https://t.me/share/url?url=https://t.me/parodiya_tabrik_uzbot&text={encoded_text}"
@@ -312,10 +340,11 @@ def get_result_keyboard(share_text: str, full_message: str = ""):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text="📲 Do'stga Ulashish (Telegram)",
-                    url=telegram_share_url
-                )
+                InlineKeyboardButton(text="🖼 Rasm (Otkritka) Olish", callback_data=f"get_image_{greeting_id}"),
+                InlineKeyboardButton(text="🎙 Audio Olish (5,000 so'm)", callback_data=f"get_audio_{greeting_id}")
+            ],
+            [
+                InlineKeyboardButton(text="📲 Do'stga Ulashish (Telegram)", url=telegram_share_url)
             ],
             [
                 InlineKeyboardButton(text="🔄 Yana Boshqa Yaratish", callback_data="start_create")
@@ -331,7 +360,6 @@ def get_result_keyboard(share_text: str, full_message: str = ""):
 # -------------------------------------------------------------
 router = Router()
 
-# Middlewarelarni ro'yxatdan o'tkazish
 router.message.middleware(ThrottlingMiddleware())
 router.callback_query.middleware(ThrottlingMiddleware())
 router.message.middleware(BanCheckMiddleware())
@@ -343,7 +371,6 @@ router.callback_query.middleware(MandatorySubscriptionMiddleware())
 
 @router.callback_query(F.data == "check_subscription")
 async def check_subscription_callback(call: CallbackQuery, bot: Bot, state: FSMContext):
-    """Foydalanuvchi 'Obunani Tekshirish' tugmasini bosganda tekshirish."""
     is_sub = await check_user_subscription(bot, call.from_user.id)
     if is_sub:
         await database.log_activity(
@@ -355,13 +382,20 @@ async def check_subscription_callback(call: CallbackQuery, bot: Bot, state: FSMC
         )
         await call.answer("✅ Rahmat! Obuna tasdiqlandi. Xush kelibsiz!", show_alert=True)
         await state.clear()
+        
+        # Doimiy ReplyKeyboardni o'rnatish
+        await call.message.answer(
+            "Pastdagi tugmalar orqali botdan tezkor foydalanishingiz mumkin:",
+            reply_markup=get_reply_main_keyboard(call.from_user.id)
+        )
+        
         welcome_text = (
             f"Assalomu alaykum, <b>{html.escape(call.from_user.first_name)}</b>! 🎭\n\n"
             "<b>«Parodiya Tabrik & Qutlovlar»</b> botiga xush kelibsiz!\n\n"
             "Sizga boshlang'ich <b>+5 ball</b> bonus berildi! 🎁\n"
             "Quyidagi qiziqarli bo'limlardan birini tanlang va yaqinlaringizga ajoyib kayfiyat ulashing:"
         )
-        await call.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=get_main_menu_keyboard(call.from_user.id))
+        await call.message.answer(welcome_text, parse_mode="HTML", reply_markup=get_main_menu_keyboard(call.from_user.id))
     else:
         await call.answer("❌ Siz hali kanalga a'zo bo'lmadingiz! Iltimos, kanalga obuna bo'ling.", show_alert=True)
 
@@ -372,7 +406,6 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     referrer_id = 0
     utm_source = ""
     
-    # Deep linking tahlili
     args = message.text.split()[1:]
     if args:
         payload = args[0]
@@ -394,7 +427,6 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
         utm_source=utm_source
     )
 
-    # Agar yangi do'st referral orqali qo'shilgan bo'lsa, taklif qilganga xabar berish
     if is_new and bonus_ref_id > 0:
         try:
             ref_notice = (
@@ -414,20 +446,68 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
         details=f"Botni ishga tushirdi (/start, ref={referrer_id}, utm={utm_source})"
     )
     
+    # 1. Pastki doimiy ReplyKeyboardni o'rnatish
+    await message.answer(
+        "Menyu tugmalari ekraningizning pastki qismiga o'rnatildi! 👇",
+        reply_markup=get_reply_main_keyboard(message.from_user.id)
+    )
+    
     welcome_text = (
         f"Assalomu alaykum, <b>{html.escape(message.from_user.first_name)}</b>! 🎭\n\n"
         "<b>«Parodiya Tabrik & Mashhurlar Qutlovi»</b> botiga xush kelibsiz!\n\n"
         "✨ Bu yerda siz:\n"
         "• Mashhurlar tilida eksklyuziv tabriklar yaratishingiz;\n"
+        "• 🖼 <b>Otkritka rasmlari</b> va 🎙 <b>Ovozli audiolarni</b> yuklab olishingiz;\n"
         "• 🧠 <b>«Qaysi personajsan?»</b> testidan o'tishingiz;\n"
         "• 📜 Do'stlaringizga <b>Rasmiy Parodiya Diplomlar</b> sovg'a qilishingiz;\n"
         "• 🎲 <b>Omad barabani</b> va 🔮 <b>Kunlik bashorat</b> olishingiz mumkin!\n\n"
-        "Quyidagi menyudan kerakli bo'limni tanlang:"
+        "Quyidagi bo'limlardan birini tanlang:"
     )
     await message.answer(welcome_text, parse_mode="HTML", reply_markup=get_main_menu_keyboard(message.from_user.id))
 
 # -------------------------------------------------------------
-# 7. PROFIL, BALLAR VA REFERRAL TIZIMI
+# 7. REPLY KEYBOARD DOIMIY TUGMALAR HANDLERLARI
+# -------------------------------------------------------------
+@router.message(F.text == "🎭 Tabrik Yaratish")
+async def r_start_create(message: Message, state: FSMContext):
+    await state.set_state(GreetingForm.choosing_category)
+    text = "🎭 <b>1-Qadam: Qanday yo'nalishda matn yaratamiz?</b>\n\nQuyidagi toifalardan birini tanlang:"
+    await message.answer(text, parse_mode="HTML", reply_markup=get_categories_keyboard())
+
+@router.message(F.text == "🧠 Qaysi Personajsan?")
+async def r_start_quiz(message: Message, state: FSMContext):
+    await start_quiz_handler(message, state)
+
+@router.message(F.text == "📜 Parodiya Sertifikat")
+async def r_start_cert(message: Message, state: FSMContext):
+    await start_cert_handler(message, state)
+
+@router.message(F.text == "🎲 Omad Barabani")
+async def r_roulette_spin(message: Message):
+    await roulette_spin_handler(message)
+
+@router.message(F.text == "🔮 Kunlik Bashorat")
+async def r_daily_fortune(message: Message):
+    await daily_fortune_handler(message)
+
+@router.message(F.text == "🏆 Ballar & Profilim")
+async def r_my_profile(message: Message):
+    await my_profile_handler(message)
+
+@router.message(F.text == "📂 Mening Tabriklarim")
+async def r_my_greetings(message: Message):
+    await my_greetings_handler(message)
+
+@router.message(F.text == "🌟 Barcha Personajlar")
+async def r_all_characters(message: Message):
+    await cmd_characters(message)
+
+@router.message(F.text == "👑 Admin Panel")
+async def r_admin_panel(message: Message, state: FSMContext):
+    await cmd_admin(message, state)
+
+# -------------------------------------------------------------
+# 8. PROFIL, BALLAR VA REFERRAL TIZIMI
 # -------------------------------------------------------------
 @router.message(Command("profile"))
 @router.callback_query(F.data == "my_profile")
@@ -533,7 +613,7 @@ async def leaderboard_handler(event: TelegramObject):
         await event.answer(text, parse_mode="HTML", reply_markup=kb)
 
 # -------------------------------------------------------------
-# 8. KULGILI TEST (QAYSI PERSONAJSAN?)
+# 9. KULGILI TEST (QAYSI PERSONAJSAN?)
 # -------------------------------------------------------------
 @router.message(Command("quiz"))
 @router.callback_query(F.data == "start_quiz")
@@ -603,11 +683,9 @@ async def quiz_q3_handler(call: CallbackQuery, state: FSMContext):
     await state.clear()
     
     ans_list = [data.get("ans1", "boyvachcha"), data.get("ans2", "boyvachcha"), chosen_char]
-    # Eng ko'p tanlangan personajni topish
     final_char = max(set(ans_list), key=ans_list.count)
     result_info = QUIZ_RESULTS.get(final_char, QUIZ_RESULTS["boyvachcha"])
     
-    # Testni tugatgani uchun +5 ball bonus!
     await database.add_user_points(call.from_user.id, 5, "Viktorina testi yakunlandi")
     
     share_text = (
@@ -640,7 +718,7 @@ async def quiz_q3_handler(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 # -------------------------------------------------------------
-# 9. RASMIY PARODIYA SERTIFIKAT VA DIPLOM GENERATORI
+# 10. RASMIY PARODIYA SERTIFIKAT VA DIPLOM GENERATORI
 # -------------------------------------------------------------
 @router.message(Command("certificate"))
 @router.callback_query(F.data == "start_cert")
@@ -720,34 +798,30 @@ async def cert_sender_entered(message: Message, state: FSMContext):
     
     cert_text = generate_certificate_text(cert_key, recipient_name, sender_name)
     
-    # Foydalanuvchiga +2 ball beriladi!
-    await database.add_user_points(message.from_user.id, 2, "Sertifikat yaratildi")
+    # Bazaga saqlash
+    g_id = await database.save_greeting(
+        user_id=message.from_user.id,
+        category="certificate",
+        character=cert_key,
+        recipient_name=recipient_name,
+        profession="diplom",
+        sender_name=sender_name,
+        text=cert_text
+    )
     
-    encoded_cert = urllib.parse.quote(cert_text)
-    share_url = f"https://t.me/share/url?url=https://t.me/parodiya_tabrik_uzbot&text={encoded_cert}"
+    await database.add_user_points(message.from_user.id, 2, "Sertifikat yaratildi")
     
     res_display = (
         "🎉 <b>Rasmiy Parodiya Sertifikati Tayyor Bo'ldi!</b>\n\n"
-        "📋 <i>Quyidagi sertifikat ustiga 1 marta bosib nusxa oling yoki to'g'ridan-to'g'ri ulashing:</i>\n\n"
+        "📋 <i>Quyidagi sertifikat ustiga 1 marta bosib nusxa oling yoki pastdagi tugmalar orqali rasm/audio qilib yuklab oling:</i>\n\n"
         f"<pre><code class=\"language-text\">{cert_text}</code></pre>\n\n"
         "⭐️ <i>Sizga sertifikat yaratganingiz uchun <b>+2 ball</b> berildi!</i>"
     )
     
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="📲 Sertifikatni Do'stga Ulashish", url=share_url)
-            ],
-            [
-                InlineKeyboardButton(text="📜 Yana Boshqa Sertifikat", callback_data="start_cert"),
-                InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
-            ]
-        ]
-    )
-    await message.answer(res_display, parse_mode="HTML", reply_markup=kb)
+    await message.answer(res_display, parse_mode="HTML", reply_markup=get_result_keyboard(f"{recipient_name} uchun diplom!", cert_text, g_id))
 
 # -------------------------------------------------------------
-# 10. TAVAKKAL OMAD BARABANI (ROULETTE)
+# 11. TAVAKKAL OMAD BARABANI (ROULETTE)
 # -------------------------------------------------------------
 @router.message(Command("roulette"))
 @router.callback_query(F.data == "roulette_spin")
@@ -761,10 +835,20 @@ async def roulette_spin_handler(event: TelegramObject):
     else:
         target_message = await event.answer(spin_msg_text, parse_mode="HTML")
         
-    await asyncio.sleep(1.2)
+    await asyncio.sleep(1.0)
     
     roulette_data = generate_random_roulette()
     await database.add_user_points(event.from_user.id, 1, "Omad barabani aylantirildi")
+    
+    g_id = await database.save_greeting(
+        user_id=event.from_user.id,
+        category="roulette",
+        character="roulette",
+        recipient_name="Do'stim",
+        profession="general",
+        sender_name="Omad Barabani",
+        text=roulette_data["text"]
+    )
     
     res_text = (
         f"🎉 <b>DJЕКPOT! BARABAN TO'XTADI!</b> {roulette_data['icon']}\n\n"
@@ -773,28 +857,10 @@ async def roulette_spin_handler(event: TelegramObject):
         "⭐️ <i>Sizga omad barabani uchun <b>+1 ball</b> berildi!</i>"
     )
     
-    share_content = (
-        f"{roulette_data['text']}\n\n"
-        "🎰 Bepul parodiya va baraban: @parodiya_tabrik_uzbot"
-    )
-    encoded_share = urllib.parse.quote(share_content)
-    share_url = f"https://t.me/share/url?url=https://t.me/parodiya_tabrik_uzbot&text={encoded_share}"
-    
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="📲 Do'stga Ulashish", url=share_url)
-            ],
-            [
-                InlineKeyboardButton(text="🔄 Yana Bir Bor Aylantirish", callback_data="roulette_spin"),
-                InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
-            ]
-        ]
-    )
-    await target_message.edit_text(res_text, parse_mode="HTML", reply_markup=kb)
+    await target_message.edit_text(res_text, parse_mode="HTML", reply_markup=get_result_keyboard("Omadli parodiya!", roulette_data['text'], g_id))
 
 # -------------------------------------------------------------
-# 11. KUNLIK KULGILI BASHORAT (GOROSKOP)
+# 12. KUNLIK KULGILI BASHORAT (GOROSKOP)
 # -------------------------------------------------------------
 @router.message(Command("fortune"))
 @router.callback_query(F.data == "daily_fortune")
@@ -841,7 +907,260 @@ async def daily_fortune_handler(event: TelegramObject):
         await event.answer(full_text, parse_mode="HTML", reply_markup=kb)
 
 # -------------------------------------------------------------
-# 12. TABRIK VA MATN YARATISH BOSQICHLARI (FSM)
+# 13. RASM (OTKRITKA) VA AUDIO (OVOZLI) YUKLAB OLISH (5,000 SO'M)
+# -------------------------------------------------------------
+@router.callback_query(F.data.startswith("get_image_"))
+async def get_image_callback(call: CallbackQuery):
+    greeting_id_str = call.data.replace("get_image_", "")
+    await call.answer("🖼 Otkritka rasmi tayyorlanmoqda...", show_alert=False)
+    
+    g_info = None
+    if greeting_id_str.isdigit():
+        g_info = await database.get_greeting_by_id(int(greeting_id_str))
+        
+    if not g_info:
+        # Fallback oxirgi tabrik
+        greetings = await database.get_user_greetings(call.from_user.id, limit=1)
+        if greetings:
+            g_info = greetings[0]
+            
+    if not g_info:
+        await call.message.answer("❌ Otkritka uchun tabrik matni topilmadi. Avval yangi tabrik yarating.")
+        return
+        
+    char_name = CHARACTERS.get(g_info["character"], {}).get("name", g_info["character"])
+    rec_name = g_info.get("recipient_name", "Do'stim")
+    s_name = g_info.get("sender_name", "Qadrdoningiz")
+    msg_text = g_info.get("generated_text", "")
+    
+    output_png = f"postcard_{call.from_user.id}_{int(time.time())}.png"
+    try:
+        media_generator.generate_postcard_image(char_name, rec_name, msg_text, s_name, output_png)
+        if os.path.exists(output_png):
+            caption = (
+                f"🖼 <b>{rec_name} uchun eksklyuziv tabrik otkritkasi!</b>\n"
+                f"🎭 Obraz: <b>{char_name}</b>\n\n"
+                "👉 @parodiya_tabrik_uzbot — Bepul parodiya tabriklar"
+            )
+            await call.message.answer_photo(
+                photo=FSInputFile(output_png),
+                caption=caption,
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Rasm yaratishda xatolik: {e}", exc_info=True)
+        await call.message.answer(f"❌ Rasm tayyorlashda xatolik yuz berdi: {e}")
+    finally:
+        if os.path.exists(output_png):
+            try:
+                os.remove(output_png)
+            except Exception:
+                pass
+
+@router.callback_query(F.data.startswith("get_audio_"))
+async def get_audio_callback(call: CallbackQuery, state: FSMContext):
+    greeting_id_str = call.data.replace("get_audio_", "")
+    user_id = call.from_user.id
+    
+    # Agar Admin bo'lsa, darhol bepul sinov audiosi tayyorlab beriladi!
+    if config.is_admin(user_id):
+        await call.answer("🎙 Admin rejimi: Audio bepul tayyorlanmoqda...", show_alert=False)
+        await send_generated_audio(call.bot, user_id, greeting_id_str, call.message)
+        return
+
+    # Oddiy foydalanuvchilar uchun: 5,000 so'm yoki 25 ball
+    profile = await database.get_user_profile(user_id)
+    pts = profile.get("points", 0)
+    
+    pay_text = (
+        "🎙 <b>Eksklyuziv Ovozli Tabrik (Audio MP3)</b> 🎧\n\n"
+        "Ushbu tabrikni tabiiy o'zbekcha diktor/aktyor ovozida audio qilib olish narxi: <b>5,000 so'm</b>!\n\n"
+        "💳 <b>To'lov usullari:</b>\n"
+        "1. Karta orqali: <code>8600 0000 0000 0000</code> (Click / Payme)\n"
+        "2. Yoki to'plangan <b>25 ball</b> referral ballaringiz evaziga <b>BEPUL</b> olish!\n\n"
+        f"⭐️ Sizning hisobingizdagi ballar: <b>{pts} ball</b>\n\n"
+        "Kerakli usulni tanlang:"
+    )
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⭐️ 25 ball evaziga olish", callback_data=f"pay_pts_{greeting_id_str}")
+            ],
+            [
+                InlineKeyboardButton(text="🧾 To'lov chekini yuborish (5,000 so'm)", callback_data=f"pay_chk_{greeting_id_str}")
+            ],
+            [
+                InlineKeyboardButton(text="🔙 Bekor qilish", callback_data="back_to_menu")
+            ]
+        ]
+    )
+    await call.message.answer(pay_text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data.startswith("pay_pts_"))
+async def pay_points_callback(call: CallbackQuery):
+    greeting_id_str = call.data.replace("pay_pts_", "")
+    user_id = call.from_user.id
+    
+    profile = await database.get_user_profile(user_id)
+    pts = profile.get("points", 0)
+    
+    if pts < 25:
+        await call.answer("❌ Ballaringiz yetarli emas (kamida 25 ball kerak)! Do'stlaringizni taklif qiling (+10 ball) yoki 5,000 so'm to'lang.", show_alert=True)
+        return
+        
+    # 25 ball yechiladi
+    await database.add_user_points(user_id, -25, "Audio tabrik xarid qilindi")
+    await call.answer("✅ 25 ball yechildi! Audiongiz tayyorlanmoqda...", show_alert=False)
+    await send_generated_audio(call.bot, user_id, greeting_id_str, call.message)
+
+@router.callback_query(F.data.startswith("pay_chk_"))
+async def pay_check_callback(call: CallbackQuery, state: FSMContext):
+    greeting_id_str = call.data.replace("pay_chk_", "")
+    await state.set_state(AudioPaymentForm.uploading_check)
+    await state.update_data(greeting_id=greeting_id_str)
+    
+    text = (
+        "🧾 <b>To'lov Chekini Yuborish</b>\n\n"
+        "1. Karta raqamiga <b>5,000 so'm</b> o'tkazing: <code>8600 0000 0000 0000</code>\n"
+        "2. To'lov chekining <b>skrinshotini (rasmini)</b> shu yerga yuboring.\n\n"
+        "<i>Chek adminga tekshirish uchun yuboriladi va tasdiqlangach, audiongiz darhol jo'natiladi!</i>"
+    )
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")]]
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=cancel_kb)
+    await call.answer()
+
+@router.message(AudioPaymentForm.uploading_check, F.photo)
+async def check_photo_received(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    await state.clear()
+    
+    greeting_id_str = data.get("greeting_id", "0")
+    photo = message.photo[-1]
+    
+    admin_caption = (
+        "🧾 <b>Yangi Audio To'lov Cheki (5,000 so'm)!</b>\n\n"
+        f"👤 Foydalanuvchi: <b>{html.escape(message.from_user.full_name)}</b>\n"
+        f"🆔 ID: <code>{message.from_user.id}</code>\n"
+        f"🎁 Tabrik ID: <code>{greeting_id_str}</code>\n\n"
+        "To'lovni tekshirib tasdiqlaysizmi?"
+    )
+    
+    admin_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Tasdiqlash va Audio Jo'natish", callback_data=f"adm_app_{message.from_user.id}_{greeting_id_str}"),
+                InlineKeyboardButton(text="❌ Rad etish", callback_data=f"adm_rej_{message.from_user.id}")
+            ]
+        ]
+    )
+    
+    try:
+        await bot.send_photo(
+            chat_id=config.ADMIN_ID,
+            photo=photo.file_id,
+            caption=admin_caption,
+            parse_mode="HTML",
+            reply_markup=admin_kb
+        )
+        await message.answer("✅ <b>Chekingiz qabul qilindi!</b>\nAdministrator tekshirib tasdiqlashi bilan ovozli tabrik shu yerga yuboriladi.", parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Adminga chek yuborishda xatolik: {e}")
+        await message.answer("⚠️ Chekni adminga jo'natishda xatolik yuz berdi. Iltimos, qayta urinib ko'ring.")
+
+@router.callback_query(F.data.startswith("adm_app_"))
+async def admin_approve_audio(call: CallbackQuery, bot: Bot):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+        
+    parts = call.data.replace("adm_app_", "").split("_")
+    target_user_id = int(parts[0])
+    greeting_id_str = parts[1] if len(parts) > 1 else "0"
+    
+    await call.answer("✅ Tasdiqlandi! Audio generatsiya qilinmoqda...", show_alert=True)
+    await send_generated_audio(bot, target_user_id, greeting_id_str, call.message)
+    await call.message.edit_caption(caption=call.message.caption + "\n\n✅ <b>ADMIN TOMONIDAN TASDIQLANDI VA AUDIO JO'NATILDI!</b>", parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("adm_rej_"))
+async def admin_reject_audio(call: CallbackQuery, bot: Bot):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+        
+    target_user_id = int(call.data.replace("adm_rej_", ""))
+    await call.answer("❌ To'lov rad etildi.", show_alert=True)
+    try:
+        await bot.send_message(
+            chat_id=target_user_id,
+            text="❌ <b>Kechirasiz, yuborgan to'lov chekingiz tasdiqlanmadi.</b>\nIltimos, haqiqiy to'lov skrinshotini yuboring yoki adminga murojaat qiling.",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await call.message.edit_caption(caption=call.message.caption + "\n\n❌ <b>TO'LOV RAD ETILDI!</b>", parse_mode="HTML")
+
+async def send_generated_audio(bot: Bot, user_id: int, greeting_id_str: str, notify_msg: Optional[Message] = None):
+    """Audio fayl yasab foydalanuvchiga jo'natish yordamchisi."""
+    g_info = None
+    if greeting_id_str.isdigit():
+        g_info = await database.get_greeting_by_id(int(greeting_id_str))
+        
+    if not g_info:
+        greetings = await database.get_user_greetings(user_id, limit=1)
+        if greetings:
+            g_info = greetings[0]
+            
+    if not g_info:
+        if notify_msg:
+            await notify_msg.answer("❌ Tabrik matni topilmadi.")
+        return
+        
+    char_key = g_info.get("character", "boyvachcha")
+    char_name = CHARACTERS.get(char_key, {}).get("name", char_key)
+    rec_name = g_info.get("recipient_name", "Do'stim")
+    msg_text = g_info.get("generated_text", "")
+    
+    output_mp3 = f"audio_{user_id}_{int(time.time())}.mp3"
+    try:
+        await media_generator.generate_audio_voice(msg_text, char_key, output_mp3)
+        if os.path.exists(output_mp3):
+            # Ovozli xabar (Voice) va MP3 hujjat qilib jo'natish
+            caption = (
+                f"🎙 <b>{rec_name} uchun eksklyuziv ovozli tabrik!</b>\n"
+                f"🎭 Obraz: <b>{char_name}</b>\n\n"
+                "👉 @parodiya_tabrik_uzbot"
+            )
+            await bot.send_voice(
+                chat_id=user_id,
+                voice=FSInputFile(output_mp3),
+                caption=caption,
+                parse_mode="HTML"
+            )
+            await bot.send_audio(
+                chat_id=user_id,
+                audio=FSInputFile(output_mp3, filename=f"Tabrik_{rec_name}.mp3"),
+                caption="📥 Yuklab olish uchun MP3 fayl",
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Audio jo'natishda xatolik: {e}", exc_info=True)
+        try:
+            await bot.send_message(chat_id=user_id, text=f"❌ Audio tayyorlashda xatolik yuz berdi: {e}")
+        except Exception:
+            pass
+    finally:
+        if os.path.exists(output_mp3):
+            try:
+                os.remove(output_mp3)
+            except Exception:
+                pass
+
+# -------------------------------------------------------------
+# 14. TABRIK YARATISH BOSQICHLARI (FSM)
 # -------------------------------------------------------------
 @router.callback_query(F.data == "start_create")
 async def start_create_handler(call: CallbackQuery, state: FSMContext):
@@ -975,7 +1294,6 @@ async def sender_entered_handler(message: Message, state: FSMContext):
     recipient_name = data.get("recipient_name", "Do'stim")
     prof_key = data.get("chosen_profession", "general")
     
-    # Eksklyuziv dinamik matnni generatsiya qilish
     generated_text = generate_custom_message(
         char_key=char_key,
         recipient_name=recipient_name,
@@ -984,8 +1302,7 @@ async def sender_entered_handler(message: Message, state: FSMContext):
         sender_name=sender_name
     )
     
-    # Bazaga tabrikni saqlash (+2 ball beriladi)
-    await database.save_greeting(
+    g_id = await database.save_greeting(
         user_id=message.from_user.id,
         category=category,
         character=char_key,
@@ -1022,11 +1339,11 @@ async def sender_entered_handler(message: Message, state: FSMContext):
     await message.answer(
         result_text,
         parse_mode="HTML",
-        reply_markup=get_result_keyboard(f"{recipient_name} uchun eksklyuziv xabar!", share_caption)
+        reply_markup=get_result_keyboard(f"{recipient_name} uchun eksklyuziv xabar!", share_caption, g_id)
     )
 
 # -------------------------------------------------------------
-# 13. MENING TABRIKLARIM, BUYRUQLAR VA INLINE QUERY
+# 15. MENING TABRIKLARIM, BUYRUQLAR VA INLINE QUERY
 # -------------------------------------------------------------
 @router.message(Command("mygreetings"))
 @router.callback_query(F.data == "my_greetings")
@@ -1071,10 +1388,12 @@ async def cmd_help(message: Message):
     help_text = (
         "📖 <b>«Parodiya Tabrik Boti» Qo'llanmasi:</b>\n\n"
         "1️⃣ <b>Tabrik yaratish:</b> <b>«🎭 Tabrik Yaratish»</b> tugmasi orqali do'stingizga kulgili qutlov tayyorlang.\n"
-        "2️⃣ <b>Qaysi personajsan?</b> 3 ta savolli testdan o'tib, o'zingizning kimligingizni bilib oling va do'stlarga ulashing!\n"
-        "3️⃣ <b>Parodiya Diplom:</b> Do'stingizga 'Yil Boyvachchasi' yoki 'Yil Taksisti' sertifikatini sovg'a qiling!\n"
-        "4️⃣ <b>Omad Barabani:</b> Birgina bosishda tasodifiy kutilmagan parodiya oling!\n"
-        "5️⃣ <b>Ballar & Unvonlar:</b> Do'stlaringizni taklif qilib har biridan <b>+10 ball</b> oling va VIP unvonga ko'tariling!\n\n"
+        "2️⃣ <b>Rasm (Otkritka):</b> Matn ostidagi <b>«🖼 Rasm Olish»</b> orqali hashamatli oltin otkritkani yuklab oling.\n"
+        "3️⃣ <b>Ovozli Audio (MP3):</b> Tabrikni <b>«🎙 Audio Olish»</b> orqali tabiiy aktyor ovozida MP3 qilib oling (5,000 so'm yoki 25 ball).\n"
+        "4️⃣ <b>Qaysi personajsan?</b> 3 ta savolli testdan o'tib, kimligingizni bilib oling va do'stlarga ulashing!\n"
+        "5️⃣ <b>Parodiya Diplom:</b> Do'stingizga 'Yil Boyvachchasi' yoki 'Yil Taksisti' sertifikatini sovg'a qiling!\n"
+        "6️⃣ <b>Omad Barabani:</b> Birgina bosishda tasodifiy kutilmagan parodiya oling!\n"
+        "7️⃣ <b>Ballar & Unvonlar:</b> Do'stlaringizni taklif qilib har biridan <b>+10 ball</b> oling va VIP unvonga ko'tariling!\n\n"
         "📌 <b>Mavjud buyruqlar:</b>\n"
         "• <code>/start</code> — Asosiy menyu\n"
         "• <code>/profile</code> — Sizning profilingiz va ballaringiz\n"
@@ -1296,7 +1615,7 @@ async def inline_query_handler(query: InlineQuery):
     await query.answer(results, cache_time=10, is_personal=True)
 
 # -------------------------------------------------------------
-# 14. ADMIN PANEL (FAQAT ID: 6268220201 UCHUN)
+# 16. ADMIN PANEL (FAQAT ID: 6268220201 UCHUN)
 # -------------------------------------------------------------
 @router.message(Command("admin"))
 async def cmd_admin(message: Message, state: FSMContext):
@@ -1757,7 +2076,7 @@ async def admin_export_callback(call: CallbackQuery, bot: Bot):
                 pass
 
 # -------------------------------------------------------------
-# 15. KEEP-ALIVE AIOHTTP VEB-SERVER (Render talabi)
+# 17. KEEP-ALIVE AIOHTTP VEB-SERVER (Render talabi)
 # -------------------------------------------------------------
 async def handle_root(request: web.Request) -> web.Response:
     stats = await database.get_statistics()
@@ -1788,7 +2107,7 @@ def create_web_server() -> web.Application:
     return app
 
 # -------------------------------------------------------------
-# 16. CRASH-PROOF BOT WATCHDOG SIKLI
+# 18. CRASH-PROOF BOT WATCHDOG SIKLI
 # -------------------------------------------------------------
 async def run_bot_polling_watchdog(bot: Bot, dp: Dispatcher):
     retry_delay = 5
@@ -1836,7 +2155,7 @@ async def auto_backup_loop(bot: Bot):
             logger.warning(f"Avtomatik backupda xatolik: {e}")
 
 # -------------------------------------------------------------
-# 17. ASOSIY ENTRYPOINT (MAIN SIKL)
+# 19. ASOSIY ENTRYPOINT (MAIN SIKL)
 # -------------------------------------------------------------
 async def main():
     logger.info("🚀 Ilova ishga tushirilmoqda...")
@@ -1850,16 +2169,16 @@ async def main():
 
     bot = Bot(token=config.BOT_TOKEN)
 
-    # Bot menyu buyruqlarini ro'yxatdan o'tkazish
+    # Telegram ko'k 'Menu' tugmasiga barcha asosiy buyruqlarni o'rnatish
     try:
         await bot.set_my_commands([
-            BotCommand(command="start", description="🚀 Asosiy menyu"),
-            BotCommand(command="profile", description="🏆 Ballarim va Profilim"),
-            BotCommand(command="top", description="🥇 Top 10 Peshqadamlar"),
-            BotCommand(command="quiz", description="🧠 Qaysi personajsan? (Test)"),
-            BotCommand(command="certificate", description="📜 Parodiya Diplom generator"),
+            BotCommand(command="start", description="🚀 Bosh menyu"),
+            BotCommand(command="profile", description="🏆 Ballaringiz va referral havolangiz"),
+            BotCommand(command="quiz", description="🧠 'Qaysi personajsan?' kulgili test"),
+            BotCommand(command="certificate", description="📜 Rasmiy parodiya diplom"),
             BotCommand(command="roulette", description="🎲 Omad barabani"),
-            BotCommand(command="fortune", description="🔮 Kunlik kulgili bashorat"),
+            BotCommand(command="fortune", description="🔮 Kunlik bashorat"),
+            BotCommand(command="characters", description="🌟 Barcha 8 ta personaj"),
             BotCommand(command="mygreetings", description="📂 Mening tabriklarim"),
             BotCommand(command="help", description="📖 Qo'llanma"),
             BotCommand(command="cancel", description="❌ Bekor qilish")
