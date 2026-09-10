@@ -1,0 +1,9 @@
+[environment]
+python = ".venv/Scripts/python.exe"
+search-path = [
+    ".venv/Lib/site-packages",
+    "C:/Users/Yutech/AppData/Local/Programs/Python/Python311/Lib/site-packages"
+]
+
+[errors]
+disabled = ["missing-import"]

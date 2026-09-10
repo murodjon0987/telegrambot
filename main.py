@@ -5,20 +5,20 @@ import sys
 import time
 from datetime import datetime
 
-from aiohttp import web
-from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
-from aiogram.filters import CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
+from aiohttp import web  # pyrefly: ignore [missing-import] # type: ignore
+from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware  # pyrefly: ignore [missing-import] # type: ignore
+from aiogram.filters import CommandStart  # pyrefly: ignore [missing-import] # type: ignore
+from aiogram.fsm.context import FSMContext  # pyrefly: ignore [missing-import] # type: ignore
+from aiogram.fsm.state import State, StatesGroup  # pyrefly: ignore [missing-import] # type: ignore
+from aiogram.fsm.storage.memory import MemoryStorage  # pyrefly: ignore [missing-import] # type: ignore
+from aiogram.types import (  # pyrefly: ignore [missing-import] # type: ignore
     Message,
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     TelegramObject
 )
-from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError  # pyrefly: ignore [missing-import] # type: ignore
 
 import config
 from characters import CHARACTERS, REASONS, generate_greeting
