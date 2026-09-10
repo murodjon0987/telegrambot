@@ -1,0 +1,18 @@
+# Muhit o'zgaruvchilari (Tokenlar hech qachon GitHub ga chiqmasligi shart!)
+.env
+
+# Python kesh va baytkodlari
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual muhitlar
+venv/
+.venv/
+env/
+
+# IDE va OS fayllari
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

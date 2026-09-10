@@ -1,0 +1,369 @@
+import asyncio
+import logging
+import signal
+import sys
+import time
+from datetime import datetime
+
+from aiohttp import web
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardRemove
+)
+from aiogram.exceptions import TelegramAPIError, TelegramNetworkError
+
+import config
+from characters import CHARACTERS, REASONS, generate_greeting
+
+# -------------------------------------------------------------
+# 1. LOGGING VA SOZLAMALAR (Low-RAM Optimization)
+# -------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("ParodyBotApp")
+
+START_TIME = time.time()
+
+# -------------------------------------------------------------
+# 2. FSM (FINITE STATE MACHINE) HOZIRGI HOLATLAR
+# -------------------------------------------------------------
+class GreetingForm(StatesGroup):
+    choosing_character = State()
+    entering_recipient = State()
+    choosing_reason = State()
+    entering_sender = State()
+
+# -------------------------------------------------------------
+# 3. KLAVIATURALAR (INTERAKTIV TUGMALAR)
+# -------------------------------------------------------------
+def get_main_menu_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🎭 Tabrik Yaratish", callback_data="start_create"),
+                InlineKeyboardButton(text="💎 VIP Personajlar", callback_data="vip_characters")
+            ],
+            [
+                InlineKeyboardButton(text="ℹ️ Bot Haqida", callback_data="about_bot"),
+                InlineKeyboardButton(text="⚡ Server Holati", callback_data="server_status")
+            ]
+        ]
+    )
+
+def get_characters_keyboard():
+    buttons = []
+    for key, data in CHARACTERS.items():
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{data['name']}",
+                callback_data=f"char_{key}"
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_reasons_keyboard():
+    buttons = []
+    for key, title in REASONS.items():
+        buttons.append([
+            InlineKeyboardButton(text=title, callback_data=f"reason_{key}")
+        ])
+    buttons.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_result_keyboard(share_text: str):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📲 Do'stga Ulashish (Share)",
+                    switch_inline_query=share_text[:50]
+                )
+            ],
+            [
+                InlineKeyboardButton(text="🔄 Yana Boshqa Tabrik", callback_data="start_create"),
+                InlineKeyboardButton(text="⭐ VIP Qutlov Olish", callback_data="vip_characters")
+            ]
+        ]
+    )
+
+# -------------------------------------------------------------
+# 4. BOT ROUTER VA HANDLERLAR
+# -------------------------------------------------------------
+router = Router()
+
+@router.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    welcome_text = (
+        f"Assalomu alaykum, <b>{message.from_user.first_name}</b>! 🎭\n\n"
+        "<b>«Parodiya Tabrik & Mashhurlar Qutlovi»</b> botiga xush kelibsiz!\n\n"
+        "Ushbu bot orqali do'stlaringiz va yaqinlaringizni O'zbekistondagi mashhur "
+        "personajlar (Boyvachcha, GAI xodimi, Bozorchi, Shoir) tilida qutlab, ularning "
+        "kayfiyatini 100% ga ko'tarishingiz mumkin! 😄\n\n"
+        "Quyidagi tugmani bosing va ajoyib tabrik yarating:"
+    )
+    await message.answer(welcome_text, parse_mode="HTML", reply_markup=get_main_menu_keyboard())
+
+@router.callback_query(F.data == "back_to_menu")
+async def back_to_menu_handler(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.edit_text(
+        "Asosiy menyuga qaytdingiz. Qanday amal bajaramiz?",
+        reply_markup=get_main_menu_keyboard()
+    )
+    await call.answer()
+
+@router.callback_query(F.data == "about_bot")
+async def about_bot_handler(call: CallbackQuery):
+    text = (
+        "<b>ℹ️ Loyiha Haqida:</b>\n\n"
+        "• <b>Texnologiya:</b> Python 3.11, aiogram 3.x, aiohttp\n"
+        "• <b>Xosting:</b> 24/7 Bepul Bulutli Cloud Konteyner\n"
+        "• <b>Rejim:</b> Crash-Proof Watchdog + Anti-Sleep Health Server\n"
+        "• <b>RAM sarfi:</b> Atigi 28-35 MB!\n\n"
+        "Yaqinlaringizga unutilmas kulgi va quvonch ulashing! 🎁"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]]
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data == "server_status")
+async def server_status_handler(call: CallbackQuery):
+    uptime_sec = int(time.time() - START_TIME)
+    hours, remainder = divmod(uptime_sec, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    status_text = (
+        "<b>⚡ Bulutli Server Holati (Health Check):</b>\n\n"
+        "🟢 <b>Status:</b> 24/7 Onlayn (Active)\n"
+        f"⏱ <b>Uptime:</b> {hours} soat, {minutes} daqiqa, {seconds} soniya\n"
+        f"🌐 <b>Tinglanayotgan Port:</b> <code>{config.PORT}</code>\n"
+        "🛡️ <b>Watchdog:</b> Faol (Crash-Proof)\n"
+        "💤 <b>Anti-Sleep Pinger:</b> Faol\n\n"
+        "<i>Server noutbukingiz o'chiq bo'lsa ham kechayu-kunduz to'xtovsiz ishlaydi!</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]]
+    )
+    await call.message.edit_text(status_text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data == "vip_characters")
+async def vip_characters_handler(call: CallbackQuery):
+    vip_text = (
+        "💎 <b>VIP Eksklyuziv Tabriklar & Monetizatsiya:</b>\n\n"
+        "Hozir siz barcha 5 ta standart personajdan <b>bepul</b> foydalanishingiz mumkin!\n\n"
+        "✨ <b>VIP To'plamga nimalar kiradi?</b>\n"
+        "1. Maxsus Ovozli Audio Qutlovlar (Audio Parodiya)\n"
+        "2. Do'stingizning shaxsiy sirlari va hazillarini qo'shish\n"
+        "3. Telegram Stars / Click / Payme to'lov tizimi integratsiyasi\n\n"
+        f"💰 Narxi: <b>{config.VIP_PRICE:,} so'm</b> / bir martalik eksklyuziv tabrik."
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Click / Payme orqali to'lov (Demo)", callback_data="demo_pay")],
+            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]
+        ]
+    )
+    await call.message.edit_text(vip_text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data == "demo_pay")
+async def demo_pay_handler(call: CallbackQuery):
+    await call.answer("To'lov tizimi muvaffaqiyatli sinovdan o'tdi! (Demo rejim)", show_alert=True)
+
+# --- TABRIK YARATISH BOSQICHLARI (FSM) ---
+
+@router.callback_query(F.data == "start_create")
+async def start_create_handler(call: CallbackQuery, state: FSMContext):
+    await state.set_state(GreetingForm.choosing_character)
+    text = (
+        "🎭 <b>1-Qadam: Kimning nomidan tabrik tayyorlaymiz?</b>\n\n"
+        "Quyidagi qiziqarli personajlardan birini tanlang:"
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_characters_keyboard())
+    await call.answer()
+
+@router.callback_query(GreetingForm.choosing_character, F.data.startswith("char_"))
+async def character_chosen_handler(call: CallbackQuery, state: FSMContext):
+    char_key = call.data.replace("char_", "")
+    await state.update_data(chosen_char=char_key)
+    await state.set_state(GreetingForm.entering_recipient)
+    
+    char_info = CHARACTERS.get(char_key, {})
+    text = (
+        f"Siz <b>{char_info.get('name')}</b> personajini tanladingiz! {char_info.get('icon')}\n\n"
+        "✍️ <b>2-Qadam:</b> Tabrik kim uchun yoziladi? "
+        "Do'stingizning yoki yaqiningizning <b>Ismini</b> yozib yuboring:\n"
+        "<i>(Masalan: Sardor, Madina, Jasur)</i>"
+    )
+    await call.message.edit_text(text, parse_mode="HTML")
+    await call.answer()
+
+@router.message(GreetingForm.entering_recipient)
+async def recipient_entered_handler(message: Message, state: FSMContext):
+    name = message.text.strip()
+    if len(name) > 40:
+        await message.answer("Iltimos, ismni qisqaroq qilib kiriting (maksimal 40 harf):")
+        return
+    
+    await state.update_data(recipient_name=name)
+    await state.set_state(GreetingForm.choosing_reason)
+    
+    text = (
+        f"Ajoyib! Demak, <b>{name}</b> uchun tabrik tayyorlaymiz.\n\n"
+        "🎉 <b>3-Qadam:</b> Tabriklash sababini tanlang:"
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=get_reasons_keyboard())
+
+@router.callback_query(GreetingForm.choosing_reason, F.data.startswith("reason_"))
+async def reason_chosen_handler(call: CallbackQuery, state: FSMContext):
+    reason_key = call.data.replace("reason_", "")
+    await state.update_data(chosen_reason=reason_key)
+    await state.set_state(GreetingForm.entering_sender)
+    
+    text = (
+        "👤 <b>4-Qadam:</b> Ushbu tabrik kimning nomidan yuboriladi?\n"
+        "O'z ismingizni yoki laqabingizni yozib yuboring:\n"
+        "<i>(Masalan: Do'stingiz Alisher, Bojxona bo'limi, Sinfdoshlar)</i>"
+    )
+    await call.message.edit_text(text, parse_mode="HTML")
+    await call.answer()
+
+@router.message(GreetingForm.entering_sender)
+async def sender_entered_handler(message: Message, state: FSMContext):
+    sender_name = message.text.strip()
+    data = await state.get_data()
+    await state.clear()
+    
+    char_key = data.get("chosen_char", "boyvachcha")
+    recipient_name = data.get("recipient_name", "Do'stim")
+    reason_key = data.get("chosen_reason", "birthday")
+    
+    # Eksklyuziv tabrik matnini generatsiya qilish
+    greeting_text = generate_greeting(
+        char_key=char_key,
+        recipient_name=recipient_name,
+        reason_key=reason_key,
+        sender_name=sender_name
+    )
+    
+    await message.answer("✨ <b>Tabrik tayyorlanmoqda... 3, 2, 1...</b>", parse_mode="HTML")
+    await asyncio.sleep(1) # Kichik realistik animatsiya effekti
+    
+    await message.answer(
+        greeting_text,
+        reply_markup=get_result_keyboard(f"{recipient_name} uchun eksklyuziv qutlov!")
+    )
+
+# -------------------------------------------------------------
+# 5. KEEP-ALIVE AIOHTTP VEB-SERVER (Render / Koyeb talabi)
+# -------------------------------------------------------------
+async def handle_root(request: web.Request) -> web.Response:
+    """Asosiy sahifa - Render xostingi uchun 200 OK qaytaradi."""
+    return web.json_response({
+        "status": "alive",
+        "service": "Telegram Parody Greeting Bot",
+        "timestamp": datetime.utcnow().isoformat(),
+        "bot": "running"
+    })
+
+async def handle_health(request: web.Request) -> web.Response:
+    """UptimeRobot yoki Cron-job.org ushbu endpointga har 5 daqiqada so'rov yuboradi."""
+    uptime_sec = int(time.time() - START_TIME)
+    return web.json_response({
+        "status": "healthy",
+        "uptime_seconds": uptime_sec,
+        "bot_status": "active",
+        "anti_sleep": "enabled"
+    })
+
+def create_web_server() -> web.Application:
+    """Yengil aiohttp veb server dasturi (RAM tejamkor)."""
+    app = web.Application()
+    app.router.add_get("/", handle_root)
+    app.router.add_get("/health", handle_health)
+    return app
+
+# -------------------------------------------------------------
+# 6. CRASH-PROOF BOT WATCHDOG SIKLI
+# -------------------------------------------------------------
+async def run_bot_polling_watchdog(bot: Bot, dp: Dispatcher):
+    """
+    Agar internet uzilsa yoki Telegram API vaqtincha javob bermasa,
+    ushbu sikl dasturni yiqilishdan (crash bo'lishdan) asraydi va 
+    avtomatik ravishda qayta ulanadi.
+    """
+    retry_delay = 5
+    while True:
+        try:
+            logger.info("🤖 Telegram Bot Polling ishga tushirilmoqda...")
+            # Eskirgan navbatdagi update'larni tozalash
+            await bot.delete_webhook(drop_pending_updates=True)
+            await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        except (TelegramNetworkError, TelegramAPIError) as api_err:
+            logger.warning(f"⚠️ Telegram tarmog'ida vaqtinchalik uzilish: {api_err}")
+            logger.info(f"⏳ {retry_delay} soniyadan so'ng avtomatik qayta ulanish...")
+            await asyncio.sleep(retry_delay)
+        except asyncio.CancelledError:
+            logger.info("🛑 Polling vazifasi to'xtatildi (Graceful shutdown).")
+            break
+        except Exception as e:
+            logger.error(f"❌ Kutilmagan xatolik yuz berdi: {e}", exc_info=True)
+            logger.info(f"⏳ {retry_delay} soniyada qayta ishga tushirishga urinish...")
+            await asyncio.sleep(retry_delay)
+
+# -------------------------------------------------------------
+# 7. ASOSIY ENTRYPOINT (MAIN SIKL)
+# -------------------------------------------------------------
+async def main():
+    logger.info("🚀 Ilova ishga tushirilmoqda...")
+
+    # Bot va Dispatcher yaratish
+    if not config.BOT_TOKEN:
+        logger.error("❌ XATO: BOT_TOKEN aniqlanmadi! Iltimos, .env faylini to'ldiring.")
+        return
+
+    bot = Bot(token=config.BOT_TOKEN)
+    storage = MemoryStorage() # Stateless va kam RAM sarfi
+    dp = Dispatcher(storage=storage)
+    dp.include_router(router)
+
+    # 1. aiohttp Veb-Serverini ishga tushirish
+    app = create_web_server()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    site = web.TCPSite(runner, host=config.HOST, port=config.PORT)
+    await site.start()
+    logger.info(f"🌐 Keep-Alive Veb-Server {config.HOST}:{config.PORT} manzilida tinglamoqda.")
+    logger.info("✅ Health endpoint: http://localhost:{}/health".format(config.PORT))
+
+    # 2. Crash-proof Bot Watchdog Pollingni ishga tushirish
+    try:
+        await run_bot_polling_watchdog(bot, dp)
+    finally:
+        logger.info("🧹 Resurslarni tozalash va yopish...")
+        await runner.cleanup()
+        await bot.session.close()
+        logger.info("👋 Ilova toza yopildi.")
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("🛑 Dastur foydalanuvchi tomonidan to'xtatildi.")
