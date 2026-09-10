@@ -726,6 +726,35 @@ async def cmd_admin(message: Message, state: FSMContext):
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_admin_keyboard())
 
+@router.message(Command("backup"))
+async def cmd_backup(message: Message, bot: Bot):
+    if not config.is_admin(message.from_user.id):
+        return
+
+    csv_filename = "users_backup.csv"
+    await database.export_users_csv(csv_filename)
+    try:
+        if os.path.exists(csv_filename):
+            await bot.send_document(
+                chat_id=message.from_user.id,
+                document=FSInputFile(csv_filename, filename=f"users_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"),
+                caption="📊 <b>Foydalanuvchilar zaxira nusxasi (CSV)</b>",
+                parse_mode="HTML"
+            )
+        if os.path.exists(database.DB_FILE):
+            await bot.send_document(
+                chat_id=message.from_user.id,
+                document=FSInputFile(database.DB_FILE, filename=f"bot_database_{datetime.now().strftime('%Y%m%d_%H%M')}.sqlite"),
+                caption="🗄 <b>To'liq SQLite ma'lumotlar bazasi</b>",
+                parse_mode="HTML"
+            )
+    finally:
+        if os.path.exists(csv_filename):
+            try:
+                os.remove(csv_filename)
+            except Exception:
+                pass
+
 @router.callback_query(F.data == "admin_panel")
 async def admin_panel_callback(call: CallbackQuery, state: FSMContext):
     if not config.is_admin(call.from_user.id):
@@ -1102,6 +1131,32 @@ async def run_bot_polling_watchdog(bot: Bot, dp: Dispatcher):
             logger.info(f"⏳ {retry_delay} soniyada qayta ishga tushirishga urinish...")
             await asyncio.sleep(retry_delay)
 
+async def auto_backup_loop(bot: Bot):
+    """Har 24 soatda avtomatik ravishda bazani admin chatiga (6268220201) zaxira qilib yuboradi."""
+    while True:
+        try:
+            await asyncio.sleep(86400)  # Har 24 soatda
+            if os.path.exists(database.DB_FILE):
+                csv_path = "auto_backup_users.csv"
+                await database.export_users_csv(csv_path)
+                try:
+                    await bot.send_document(
+                        chat_id=config.ADMIN_ID,
+                        document=FSInputFile(csv_path, filename=f"users_backup_{datetime.now().strftime('%Y%m%d')}.csv"),
+                        caption="🛡️ <b>Avtomatik 24 soatlik zaxira nusxa (CSV)</b>",
+                        parse_mode="HTML"
+                    )
+                finally:
+                    if os.path.exists(csv_path):
+                        try:
+                            os.remove(csv_path)
+                        except Exception:
+                            pass
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"Avtomatik backupda xatolik: {e}")
+
 # -------------------------------------------------------------
 # 10. ASOSIY ENTRYPOINT (MAIN SIKL)
 # -------------------------------------------------------------
@@ -1132,10 +1187,14 @@ async def main():
     logger.info(f"📢 Majburiy kanal a'zoligi faol: {config.CHANNEL_ID}")
     logger.info(f"👑 Boshqaruvchi Admin ID: {config.ADMIN_ID}")
 
-    # 2. Crash-proof Bot Watchdog Pollingni ishga tushirish
+    # 2. Avtomatik 24 soatlik zaxiralash fon vazifasi
+    backup_task = asyncio.create_task(auto_backup_loop(bot))
+
+    # 3. Crash-proof Bot Watchdog Pollingni ishga tushirish
     try:
         await run_bot_polling_watchdog(bot, dp)
     finally:
+        backup_task.cancel()
         logger.info("🧹 Resurslarni tozalash va yopish...")
         await runner.cleanup()
         await bot.session.close()
