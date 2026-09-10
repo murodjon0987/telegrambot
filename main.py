@@ -241,15 +241,20 @@ async def all_characters_handler(call: CallbackQuery):
 @router.callback_query(F.data == "about_bot")
 async def about_bot_handler(call: CallbackQuery):
     text = (
-        "<b>ℹ️ Loyiha Haqida:</b>\n\n"
-        "• <b>Xizmat:</b> 100% Bepul va Cheksiz\n"
-        f"• <b>Rasmiy Kanal:</b> {config.CHANNEL_ID}\n"
-        "• <b>Xosting:</b> 24/7 Bepul Bulutli Cloud Server\n"
-        "• <b>Rejim:</b> Crash-Proof Watchdog + Anti-Sleep Health Server\n\n"
-        "Yaqinlaringizga quvonch va tabassum ulashing! 🎁"
+        "<b>🎭 «Parodiya Tabrik & Qutlovlar» Boti</b>\n\n"
+        "Yaqinlaringiz va do'stlaringizga O'zbekistonning eng mashhur personajlari "
+        "tilida eksklyuziv, kulgili va unutilmas tabriklar ulashuvchi 100% bepul bot! ✨\n\n"
+        f"👑 <b>Loyiha Muallifi:</b> {config.CREATOR_USERNAME}\n"
+        f"📢 <b>Rasmiy Kanal:</b> {config.CHANNEL_ID}\n"
+        "⚡ <b>Xizmat:</b> 100% Bepul va Cheksiz\n"
+        "🛡️ <b>Ishlash Rejimi:</b> 24/7 To'xtovsiz (Bulutli Cloud)\n\n"
+        "<i>Har bir kuningiz bayramona quvonch va tabassumga to'lsin! 🎁</i>"
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="👤 Muallif Bilan Bog'lanish", url="https://t.me/wenzone72")],
+            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]
+        ]
     )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     await call.answer()

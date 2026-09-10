@@ -13,6 +13,9 @@ HOST = os.getenv("HOST", "0.0.0.0")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@my_shaxsiyolam").strip()
 CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/my_shaxsiyolam").strip()
 
+# Loyiha asoschisi (Muallif)
+CREATOR_USERNAME = os.getenv("CREATOR_USERNAME", "@wenzone72").strip()
+
 if not BOT_TOKEN:
     # Lokal testda xabar berish
     print("[OGOHLANTIRISH] BOT_TOKEN topilmadi! .env fayliga BOT_TOKEN ni kiriting.")
