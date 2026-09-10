@@ -132,6 +132,20 @@ def _init_db_sync():
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_leaderboard_amount ON site_leaderboard(amount DESC);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_leaderboard_status ON site_leaderboard(status);")
+        
+        cursor.execute("SELECT COUNT(*) FROM site_leaderboard WHERE status = 'approved';")
+        if cursor.fetchone()[0] == 0:
+            sample_data = [
+                (6268220201, "Jasur Bekmirzayev", "Toshkentning Eng Katta Boyvachchasi", "", 150000, "approved", 0, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                (6268220201, "Sardor Rahimov", "Choyxona Bosh Homiysi", "", 80000, "approved", 0, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                (6268220201, "Madina Aliyeva", "Kelajak Milliarderi & Shef", "", 45000, "approved", 0, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                (6268220201, "Bobur Mirzayev", "Poytaxtning Eng Saxiy Insoni", "", 20000, "approved", 0, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            ]
+            cursor.executemany("""
+                INSERT INTO site_leaderboard (user_id, friend_name, friend_title, image_filename, amount, status, receipt_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, sample_data)
+            
         conn.commit()
 
 async def init_db():

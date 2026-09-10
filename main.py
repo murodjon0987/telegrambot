@@ -276,19 +276,21 @@ def get_reply_main_keyboard(user_id: int = 0):
             KeyboardButton(text="🌟 VIP Jurnal Muqovasi")
         ],
         [
-            KeyboardButton(text="🎁 Yutuqli Konkurs"),
             KeyboardButton(text="👑 Top Boyvachchalar Reytingi")
         ],
         [
-            KeyboardButton(text="🧠 Qaysi Personajsan?"),
-            KeyboardButton(text="📜 Parodiya Sertifikat")
+            KeyboardButton(text="🎁 Yutuqli Konkurs"),
+            KeyboardButton(text="🧠 Qaysi Personajsan?")
         ],
         [
-            KeyboardButton(text="🎲 Omad Barabani"),
-            KeyboardButton(text="🔮 Kunlik Bashorat")
+            KeyboardButton(text="📜 Parodiya Sertifikat"),
+            KeyboardButton(text="🎲 Omad Barabani")
         ],
         [
-            KeyboardButton(text="🏆 Ballar & Profilim"),
+            KeyboardButton(text="🔮 Kunlik Bashorat"),
+            KeyboardButton(text="🏆 Ballar & Profilim")
+        ],
+        [
             KeyboardButton(text="📂 Mening Tabriklarim")
         ]
     ]
@@ -303,11 +305,13 @@ def get_main_menu_keyboard(user_id: int = 0):
             InlineKeyboardButton(text="🎭 Tabrik Yaratish (Bepul)", callback_data="start_create")
         ],
         [
-            InlineKeyboardButton(text="🌟 VIP Jurnal Muqovasi (Forbes)", callback_data="start_magazine"),
             InlineKeyboardButton(text="👑 Top Boyvachchalar Reytingi", callback_data="top_leaderboard")
         ],
         [
-            InlineKeyboardButton(text="🎁 Yutuqli Konkurs (+Ballar)", callback_data="open_contest"),
+            InlineKeyboardButton(text="🌟 VIP Jurnal Muqovasi (Forbes)", callback_data="start_magazine"),
+            InlineKeyboardButton(text="🎁 Yutuqli Konkurs (+Ballar)", callback_data="open_contest")
+        ],
+        [
             InlineKeyboardButton(text="👥 Guruhga Qo'shish (Prank)", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true")
         ],
         [
@@ -600,7 +604,7 @@ async def r_my_greetings(message: Message):
 async def r_vip_magazine(message: Message, state: FSMContext):
     await start_magazine_intro(message, state)
 
-@router.message(F.text.in_({"👑 Top Boyvachchalar Reytingi", "👑 Saytdagi Top Boyvachchalar"}))
+@router.message(F.text.func(lambda t: t and ("top boyvachcha" in t.lower() or "saytdagi top" in t.lower())))
 @router.message(Command("top"))
 async def r_top_leaderboard(message: Message, state: FSMContext):
     await state.clear()
@@ -1743,12 +1747,7 @@ async def show_leaderboard_summary(event: TelegramObject):
             name = html.escape(item.get("friend_name", "Noma'lum"))
             amt = item.get("amount", 0)
             u_title = html.escape(item.get("friend_title", "Boyvachcha"))
-            if idx == 0:
-                text += f"{m_icon} <b>QIROL: {name}</b> — <b>{amt:,} so'm</b> 👑\n   └ <i>{u_title}</i>\n\n"
-            elif idx < 3:
-                text += f"{m_icon} <b>{name}</b> — <b>{amt:,} so'm</b>\n   └ <i>{u_title}</i>\n\n"
-            else:
-                text += f"{m_icon} <b>{name}</b> — {amt:,} so'm (<i>{u_title}</i>)\n"
+            text += f"{m_icon} <b>{name}</b> ({amt:,} so'm) — <i>{u_title}</i>\n"
     else:
         text += "<i>Hozircha reyting bo'sh! Birinchi bo'lib do'stingizni #1 o'ringa chiqaring!</i>\n"
         
@@ -1777,7 +1776,13 @@ async def show_leaderboard_summary(event: TelegramObject):
     
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     if isinstance(event, CallbackQuery):
-        await event.message.answer(text, parse_mode="HTML", reply_markup=kb)
+        try:
+            await event.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        except Exception:
+            try:
+                await event.message.answer(text, parse_mode="HTML", reply_markup=kb)
+            except Exception:
+                pass
         await event.answer()
     else:
         await event.answer(text, parse_mode="HTML", reply_markup=kb)
