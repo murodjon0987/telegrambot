@@ -21,7 +21,7 @@ from aiogram.types import (  # pyrefly: ignore [missing-import] # type: ignore
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError  # pyrefly: ignore [missing-import] # type: ignore
 
 import config
-from characters import CHARACTERS, REASONS, generate_greeting
+from characters import CHARACTERS, CATEGORIES, PROFESSIONS, generate_custom_message
 
 # -------------------------------------------------------------
 # 1. LOGGING VA SOZLAMALAR (Low-RAM Optimization)
@@ -39,9 +39,10 @@ START_TIME = time.time()
 # 2. FSM (FINITE STATE MACHINE) HOZIRGI HOLATLAR
 # -------------------------------------------------------------
 class GreetingForm(StatesGroup):
+    choosing_category = State()
     choosing_character = State()
     entering_recipient = State()
-    choosing_reason = State()
+    choosing_profession = State()
     entering_sender = State()
 
 # -------------------------------------------------------------
@@ -134,25 +135,32 @@ def get_main_menu_keyboard():
         ]
     )
 
+def get_categories_keyboard():
+    buttons = []
+    for key, title in CATEGORIES.items():
+        buttons.append([InlineKeyboardButton(text=title, callback_data=f"cat_{key}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 def get_characters_keyboard():
     buttons = []
     for key, data in CHARACTERS.items():
         buttons.append([
             InlineKeyboardButton(
-                text=f"{data['name']} (Bepul)",
+                text=f"{data['name']}",
                 callback_data=f"char_{key}"
             )
         ])
     buttons.append([InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_reasons_keyboard():
+def get_professions_keyboard():
     buttons = []
-    for key, title in REASONS.items():
+    for key, title in PROFESSIONS.items():
         buttons.append([
-            InlineKeyboardButton(text=title, callback_data=f"reason_{key}")
+            InlineKeyboardButton(text=title, callback_data=f"prof_{key}")
         ])
-    buttons.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")])
+    buttons.append([InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_result_keyboard(share_text: str):
@@ -165,7 +173,7 @@ def get_result_keyboard(share_text: str):
                 )
             ],
             [
-                InlineKeyboardButton(text="🔄 Yana Boshqa Tabrik Yaratish", callback_data="start_create")
+                InlineKeyboardButton(text="🔄 Yana Boshqa Yaratish", callback_data="start_create")
             ],
             [
                 InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
@@ -306,14 +314,27 @@ async def ads_partnership_handler(call: CallbackQuery):
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     await call.answer()
 
-# --- TABRIK YARATISH BOSQICHLARI (FSM) ---
+# --- TABRIK VA MATN YARATISH BOSQICHLARI (FSM) ---
 
 @router.callback_query(F.data == "start_create")
 async def start_create_handler(call: CallbackQuery, state: FSMContext):
-    await state.set_state(GreetingForm.choosing_character)
+    await state.set_state(GreetingForm.choosing_category)
     text = (
-        "🎭 <b>1-Qadam: Kimning nomidan tabrik tayyorlaymiz?</b>\n\n"
-        "Quyidagi personajlardan birini tanlang (barchasi bepul):"
+        "🎭 <b>1-Qadam: Qanday yo'nalishda matn yaratamiz?</b>\n\n"
+        "Quyidagi qiziqarli toifalardan birini tanlang:"
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_categories_keyboard())
+    await call.answer()
+
+@router.callback_query(GreetingForm.choosing_category, F.data.startswith("cat_"))
+async def category_chosen_handler(call: CallbackQuery, state: FSMContext):
+    category_key = call.data.replace("cat_", "")
+    await state.update_data(chosen_category=category_key)
+    await state.set_state(GreetingForm.choosing_character)
+    
+    text = (
+        "👤 <b>2-Qadam: Ushbu matn kimning nomidan (qaysi personaj tilida) bo'lsin?</b>\n\n"
+        "O'zingizga ma'qul xarakterni tanlang:"
     )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_characters_keyboard())
     await call.answer()
@@ -326,8 +347,8 @@ async def character_chosen_handler(call: CallbackQuery, state: FSMContext):
     
     char_info = CHARACTERS.get(char_key, {})
     text = (
-        f"Siz <b>{char_info.get('name')}</b> personajini tanladingiz! {char_info.get('icon')}\n\n"
-        "✍️ <b>2-Qadam:</b> Tabrik kim uchun yoziladi? "
+        f"Tanlangan personaj: <b>{char_info.get('name')}</b> {char_info.get('icon')}\n\n"
+        "✍️ <b>3-Qadam:</b> Ushbu xabar kim uchun yoziladi? "
         "Do'stingizning yoki yaqiningizning <b>Ismini</b> yozib yuboring:\n"
         "<i>(Masalan: Sardor, Madina, Jasur)</i>"
     )
@@ -342,24 +363,25 @@ async def recipient_entered_handler(message: Message, state: FSMContext):
         return
     
     await state.update_data(recipient_name=name)
-    await state.set_state(GreetingForm.choosing_reason)
+    await state.set_state(GreetingForm.choosing_profession)
     
     text = (
-        f"Ajoyib! Demak, <b>{name}</b> uchun tabrik tayyorlaymiz.\n\n"
-        "🎉 <b>3-Qadam:</b> Tabriklash sababini tanlang:"
+        f"Ajoyib! Demak, <b>{name}</b> uchun tayyorlaymiz.\n\n"
+        "💼 <b>4-Qadam:</b> Matn yanada kulgili va aniq chiqishi uchun — "
+        f"<b>{name} qaysi sohada ishlaydi (kasbi nima)?</b>"
     )
-    await message.answer(text, parse_mode="HTML", reply_markup=get_reasons_keyboard())
+    await message.answer(text, parse_mode="HTML", reply_markup=get_professions_keyboard())
 
-@router.callback_query(GreetingForm.choosing_reason, F.data.startswith("reason_"))
-async def reason_chosen_handler(call: CallbackQuery, state: FSMContext):
-    reason_key = call.data.replace("reason_", "")
-    await state.update_data(chosen_reason=reason_key)
+@router.callback_query(GreetingForm.choosing_profession, F.data.startswith("prof_"))
+async def profession_chosen_handler(call: CallbackQuery, state: FSMContext):
+    prof_key = call.data.replace("prof_", "")
+    await state.update_data(chosen_profession=prof_key)
     await state.set_state(GreetingForm.entering_sender)
     
     text = (
-        "👤 <b>4-Qadam:</b> Ushbu tabrik kimning nomidan yuboriladi?\n"
+        "👤 <b>5-Qadam:</b> Ushbu tabrik kimning nomidan yuboriladi?\n"
         "O'z ismingizni yoki laqabingizni yozib yuboring:\n"
-        "<i>(Masalan: Do'stingiz Alisher, Bojxona bo'limi, Sinfdoshlar)</i>"
+        "<i>(Masalan: Do'stingiz Alisher, Sinfdoshlar, Bojxona jamoasi)</i>"
     )
     await call.message.edit_text(text, parse_mode="HTML")
     await call.answer()
@@ -370,24 +392,34 @@ async def sender_entered_handler(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
     
+    category = data.get("chosen_category", "greeting")
     char_key = data.get("chosen_char", "boyvachcha")
     recipient_name = data.get("recipient_name", "Do'stim")
-    reason_key = data.get("chosen_reason", "birthday")
+    prof_key = data.get("chosen_profession", "general")
     
-    # Eksklyuziv tabrik matnini generatsiya qilish
-    greeting_text = generate_greeting(
+    # Eksklyuziv dinamik matnni generatsiya qilish
+    generated_text = generate_custom_message(
         char_key=char_key,
         recipient_name=recipient_name,
-        reason_key=reason_key,
+        category=category,
+        profession_key=prof_key,
         sender_name=sender_name
     )
     
-    await message.answer("✨ <b>Tabrik tayyorlanmoqda... 3, 2, 1...</b>", parse_mode="HTML")
+    await message.answer("✨ <b>Matn tayyorlanmoqda... 3, 2, 1...</b>", parse_mode="HTML")
     await asyncio.sleep(1)
     
+    # Burchakda copy bo'lishi uchun maxsus pre code formati
+    result_text = (
+        "🎉 <b>Eksklyuziv Matn Tayyor Bo'ldi!</b>\n\n"
+        "📋 <i>Quyidagi matnning burchagidagi <b>«Copy»</b> tugmasini bosib (yoki matn ustiga 1 marta bosib) nusxalab oling:</i>\n\n"
+        f"<pre><code class=\"language-text\">{generated_text}</code></pre>"
+    )
+    
     await message.answer(
-        greeting_text,
-        reply_markup=get_result_keyboard(f"{recipient_name} uchun eksklyuziv qutlov!")
+        result_text,
+        parse_mode="HTML",
+        reply_markup=get_result_keyboard(f"{recipient_name} uchun eksklyuziv xabar!")
     )
 
 # -------------------------------------------------------------
