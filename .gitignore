@@ -17,9 +17,9 @@ env/
 .DS_Store
 Thumbs.db
 
-# Ma'lumotlar bazasi va eksport fayllari
-*.db
-*.sqlite
-*.sqlite3
+# Eksport fayllari va vaqtinchalik db
 *.csv
+*.db
+*.sqlite3
+!bot_database.sqlite
 

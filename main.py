@@ -355,6 +355,10 @@ def get_admin_keyboard(pending_count: int = 0):
                 InlineKeyboardButton(text="📢 Rassilka Yuborish", callback_data="admin_broadcast")
             ],
             [
+                InlineKeyboardButton(text="💾 Bulutga Saqlash (Sync)", callback_data="admin_cloud_backup"),
+                InlineKeyboardButton(text="📥 Bulutdan Tiklash (Restore)", callback_data="admin_cloud_restore")
+            ],
+            [
                 InlineKeyboardButton(text="📥 Baza Eksport (CSV/DB)", callback_data="admin_export"),
                 InlineKeyboardButton(text="🧹 Loglarni Tozalash", callback_data="admin_cleanup")
             ],
@@ -525,16 +529,18 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
         utm_source=utm_source
     )
 
-    if is_new and bonus_ref_id > 0:
-        try:
-            ref_notice = (
-                f"🎉 <b>Do'stingiz {html.escape(message.from_user.first_name)} botga qo'shildi!</b>\n\n"
-                "Sizga <b>+10 ball</b> taqdim etildi! 🎁\n"
-                "Profilingiz va yutuqlaringizni ko'rish uchun /profile buyrug'ini bosing."
-            )
-            await bot.send_message(chat_id=bonus_ref_id, text=ref_notice, parse_mode="HTML")
-        except Exception:
-            pass
+    if is_new:
+        asyncio.create_task(backup_database_to_cloud(bot, reason=f"Yangi foydalanuvchi ({message.from_user.id})"))
+        if bonus_ref_id > 0:
+            try:
+                ref_notice = (
+                    f"🎉 <b>Do'stingiz {html.escape(message.from_user.first_name)} botga qo'shildi!</b>\n\n"
+                    "Sizga <b>+10 ball</b> taqdim etildi! 🎁\n"
+                    "Profilingiz va yutuqlaringizni ko'rish uchun /profile buyrug'ini bosing."
+                )
+                await bot.send_message(chat_id=bonus_ref_id, text=ref_notice, parse_mode="HTML")
+            except Exception:
+                pass
 
     await database.log_activity(
         user_id=message.from_user.id,
@@ -2085,6 +2091,7 @@ async def adm_ldb_app_cb(call: CallbackQuery, bot: Bot):
     if entry.get("receipt_id"):
         await database.update_receipt_status(entry["receipt_id"], status="approved")
         
+    asyncio.create_task(backup_database_to_cloud(bot, reason="Top reyting to'lovi tasdiqlandi"))
     await call.answer(f"✅ {amount:,} so'm bilan reytingga qo'shildi!", show_alert=True)
     
     try:
@@ -2155,6 +2162,7 @@ async def adm_custom_amount_received(message: Message, state: FSMContext, bot: B
     if entry.get("receipt_id"):
         await database.update_receipt_status(entry["receipt_id"], status="approved")
         
+    asyncio.create_task(backup_database_to_cloud(bot, reason="Top reyting to'lovi tasdiqlandi (maxsus summa)"))
     await message.answer(f"✅ <b>Muvaffaqiyatli tasdiqlandi!</b> «{entry['friend_name']}» reytingga <b>{amount:,} so'm</b> bilan joylandi!", parse_mode="HTML")
     
     user_kb = InlineKeyboardMarkup(
@@ -3036,6 +3044,37 @@ async def admin_cleanup_callback(call: CallbackQuery):
     await call.answer(f"🧹 {deleted_count} ta eskirgan log tozalandi!", show_alert=True)
     await admin_panel_callback(call, None)
 
+@router.callback_query(F.data == "admin_cloud_backup")
+async def cb_admin_cloud_backup(call: CallbackQuery, bot: Bot):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+    await call.answer("⏳ Bulutga saqlanmoqda...", show_alert=False)
+    success = await backup_database_to_cloud(bot, reason="Admin qo'lda saqladi")
+    if success:
+        await call.message.answer("✅ <b>Ma'lumotlar bazasi Telegram Cloud'ga muvaffaqiyatli saqlandi va qadaldi!</b>", parse_mode="HTML")
+    else:
+        await call.message.answer("⚠️ Baza zaxirasini yaratishda xatolik bo'ldi.", parse_mode="HTML")
+
+@router.callback_query(F.data == "admin_cloud_restore")
+async def cb_admin_cloud_restore(call: CallbackQuery, bot: Bot):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+    await call.answer("⏳ Bulutdan tiklanmoqda...", show_alert=False)
+    success = await restore_database_from_cloud(bot)
+    if success:
+        await database.init_db()
+        stats = await database.get_statistics()
+        await call.message.answer(
+            f"✅ <b>Baza Telegram Cloud'dan muvaffaqiyatli qayta tiklandi!</b>\n\n"
+            f"👥 Foydalanuvchilar: <b>{stats['total_users']} ta</b>\n"
+            f"🎉 Tabriklar: <b>{stats['total_greetings']} ta</b>",
+            parse_mode="HTML"
+        )
+    else:
+        await call.message.answer("ℹ️ Qadalgan zaxira nusxasi topilmadi yoki tiklash imkoni bo'lmadi.", parse_mode="HTML")
+
 @router.callback_query(F.data == "admin_logs")
 async def admin_logs_callback(call: CallbackQuery):
     if not config.is_admin(call.from_user.id):
@@ -3405,31 +3444,85 @@ async def run_bot_polling_watchdog(bot: Bot, dp: Dispatcher):
             logger.info(f"⏳ {retry_delay} soniyada qayta ishga tushirishga urinish...")
             await asyncio.sleep(retry_delay)
 
-async def auto_backup_loop(bot: Bot):
-    """Har 24 soatda avtomatik ravishda bazani admin chatiga (6268220201) zaxira qilib yuboradi."""
-    while True:
+LAST_BACKUP_TIME = 0
+
+async def backup_database_to_cloud(bot: Bot, reason: str = "periodic") -> bool:
+    """Ma'lumotlar bazasini Telegram Cloud (Admin chat)ga yuborib, xabarni qadab qo'yadi."""
+    global LAST_BACKUP_TIME
+    try:
+        if not os.path.exists(database.DB_FILE):
+            return False
+            
+        now_ts = int(time.time())
+        if not reason.startswith("Admin") and (now_ts - LAST_BACKUP_TIME < 30):
+            return False
+            
+        stats = await database.get_statistics()
+        caption = (
+            "🛡️ <b>#DB_BACKUP_AUTO — Bulutli Doimiy Xotira Zaxirasi</b> 📦\n\n"
+            f"👥 Jami foydalanuvchilar: <b>{stats['total_users']} ta</b>\n"
+            f"🎉 Yaratilgan tabriklar: <b>{stats['total_greetings']} ta</b>\n"
+            f"📅 Vaqt: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
+            f"📌 Sabab: <i>{reason}</i>\n\n"
+            "<i>⚠️ Ushbu xabar bot Renderda o'chib-yonganida bazani 100% qayta tiklash uchun qadalgan (pinned). Iltimos, o'chirib yubormang!</i>"
+        )
+        
+        doc_msg = await bot.send_document(
+            chat_id=config.ADMIN_ID,
+            document=FSInputFile(database.DB_FILE, filename=f"bot_database_backup_{now_ts}.sqlite"),
+            caption=caption,
+            parse_mode="HTML",
+            disable_notification=True
+        )
+        
         try:
-            await asyncio.sleep(86400)
-            if os.path.exists(database.DB_FILE):
-                csv_path = "auto_backup_users.csv"
-                await database.export_users_csv(csv_path)
-                try:
-                    await bot.send_document(
-                        chat_id=config.ADMIN_ID,
-                        document=FSInputFile(csv_path, filename=f"users_backup_{datetime.now().strftime('%Y%m%d')}.csv"),
-                        caption="🛡️ <b>Avtomatik 24 soatlik zaxira nusxa (CSV)</b>",
-                        parse_mode="HTML"
-                    )
-                finally:
-                    if os.path.exists(csv_path):
+            await bot.pin_chat_message(chat_id=config.ADMIN_ID, message_id=doc_msg.message_id, disable_notification=True)
+        except Exception as pin_err:
+            logger.debug(f"Xabarni pin qilishda eslatma: {pin_err}")
+            
+        LAST_BACKUP_TIME = now_ts
+        logger.info(f"💾 Baza Telegram Cloud'ga muvaffaqiyatli saqlandi va qadaldi (Sabab: {reason}).")
+        return True
+    except Exception as e:
+        logger.warning(f"Telegram Cloud backupda xatolik: {e}")
+        return False
+
+async def restore_database_from_cloud(bot: Bot) -> bool:
+    """Server o'chib-yonganida (masalan, Renderda) Telegram Cloud (pinned message)dan eng oxirgi bazani tiklaydi."""
+    try:
+        logger.info("🔍 Telegram Cloud'da oxirgi zaxira nusxasini qidirish...")
+        chat = await bot.get_chat(config.ADMIN_ID)
+        pinned = chat.pinned_message
+        if pinned and pinned.document and pinned.document.file_name and ("bot_database_backup" in pinned.document.file_name or "bot_db_backup" in pinned.document.file_name):
+            file_info = await bot.get_file(pinned.document.file_id)
+            if file_info.file_path:
+                temp_restore_path = database.DB_FILE + ".restore"
+                await bot.download_file(file_info.file_path, destination=temp_restore_path)
+                if os.path.exists(temp_restore_path) and os.path.getsize(temp_restore_path) > 0:
+                    if os.path.exists(database.DB_FILE):
                         try:
-                            os.remove(csv_path)
+                            os.remove(database.DB_FILE)
                         except Exception:
                             pass
+                    os.replace(temp_restore_path, database.DB_FILE)
+                    logger.info(f"🎉 Baza muvaffaqiyatli tiklandi! Fayl: {pinned.document.file_name}")
+                    return True
+        logger.info("ℹ️ Telegram Cloud'da yangi zaxira topilmadi, mavjud bazadan foydalaniladi.")
+    except Exception as e:
+        logger.warning(f"Telegram Cloud'dan bazani tiklashda xatolik: {e}")
+    return False
+
+async def auto_cloud_sync_loop(bot: Bot):
+    """Har 15 daqiqada bazani avtomatik ravishda Telegram Cloud'ga zaxiralab turadi."""
+    await asyncio.sleep(120)  # Ishga tushgandan 2 daqiqa o'tib birinchi zaxira
+    while True:
+        try:
+            await backup_database_to_cloud(bot, reason="Har 15 daqiqalik avto-sinxronizatsiya")
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.warning(f"Avtomatik backupda xatolik: {e}")
+            logger.warning(f"Auto cloud sync xatosi: {e}")
+        await asyncio.sleep(900)
 
 async def anti_sleep_loop():
     """Render.com bepul serveri uxlab qolmasligi uchun har 10 daqiqada o'zining public URL siga so'rov yuboradi."""
@@ -3454,14 +3547,18 @@ async def anti_sleep_loop():
 async def main():
     logger.info("🚀 Ilova ishga tushirilmoqda...")
 
-    await database.init_db()
-    logger.info("📦 SQLite Ma'lumotlar bazasi muvaffaqiyatli ishga tushirildi.")
-
     if not config.BOT_TOKEN:
         logger.error("❌ XATO: BOT_TOKEN aniqlanmadi! Iltimos, .env faylini to'ldiring.")
         return
 
     bot = Bot(token=config.BOT_TOKEN)
+
+    # 1. Telegram Cloud'dan eng oxirgi bazani tiklash (agar mavjud bo'lsa)
+    await restore_database_from_cloud(bot)
+
+    # 2. SQLite bazasini ishga tushirish
+    await database.init_db()
+    logger.info("📦 SQLite Ma'lumotlar bazasi muvaffaqiyatli ishga tushirildi.")
 
     # Telegram ko'k 'Menu' tugmasiga barcha asosiy buyruqlarni o'rnatish
     try:
@@ -3501,12 +3598,13 @@ async def main():
     logger.info(f"📢 Majburiy kanal a'zoligi faol: {config.CHANNEL_ID}")
     logger.info(f"👑 Boshqaruvchi Admin ID: {config.ADMIN_ID}")
 
-    backup_task = asyncio.create_task(auto_backup_loop(bot))
+    backup_task = asyncio.create_task(auto_cloud_sync_loop(bot))
     anti_sleep_task = asyncio.create_task(anti_sleep_loop())
 
     try:
         await run_bot_polling_watchdog(bot, dp)
     finally:
+        await backup_database_to_cloud(bot, reason="Bot to'xtatildi (Graceful shutdown)")
         backup_task.cancel()
         anti_sleep_task.cancel()
         logger.info("🧹 Resurslarni tozalash va yopish...")
