@@ -127,6 +127,7 @@ def get_main_menu_keyboard():
                 InlineKeyboardButton(text="ℹ️ Bot Haqida", callback_data="about_bot")
             ],
             [
+                InlineKeyboardButton(text="🤝 Reklama & Hamkorlik", callback_data="ads_partnership"),
                 InlineKeyboardButton(text="⚡ Server Holati", callback_data="server_status")
             ]
         ]
@@ -278,6 +279,30 @@ async def server_status_handler(call: CallbackQuery):
         inline_keyboard=[[InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]]
     )
     await call.message.edit_text(status_text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data == "ads_partnership")
+async def ads_partnership_handler(call: CallbackQuery):
+    text = (
+        "<b>🤝 Reklama va Hamkorlik Bo'limi</b> 📢\n\n"
+        "Botingiz va kanallaringiz auditoriyasini biz bilan birga kengaytiring! "
+        "Biz quyidagi yo'nalishlarda hamkorlik qilishga tayyormiz:\n\n"
+        "📌 <b>Taklif Qilinadigan Xizmatlar:</b>\n"
+        "• <b>Majburiy Obuna (OP):</b> Kanalingizga jonli, faol va real o'zbek auditoriyasini jalb qilish.\n"
+        "• <b>Xabarnoma (Rassilka):</b> Botning barcha foydalanuvchilariga reklama xabaringizni yuborish.\n"
+        "• <b>Tugmali Integratsiya:</b> Bot ichidagi tabriklar va menyularda maxsus reklama havolalari joylashtirish.\n"
+        "• <b>O'zaro Hamkorlik (VP):</b> Boshqa bot va kanallar bilan do'stona almashinuv.\n\n"
+        f"👑 <b>Reklama Bo'yicha Mas'ul:</b> {config.CREATOR_USERNAME}\n\n"
+        "<i>Batafsil ma'lumot va narxlar bo'yicha pastdagi tugma orqali murojaat qiling:</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Adminga Yozish (@wenzone72)", url="https://t.me/wenzone72")],
+            [InlineKeyboardButton(text="📢 Rasmiy Kanalimiz", url=config.CHANNEL_URL)],
+            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
+        ]
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     await call.answer()
 
 # --- TABRIK YARATISH BOSQICHLARI (FSM) ---
