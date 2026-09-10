@@ -34,12 +34,16 @@ from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramF
 import config
 import database
 import media_generator
+import leaderboard_web
 from characters import (
     CHARACTERS, CATEGORIES, PROFESSIONS, generate_custom_message,
     QUIZ_QUESTIONS, QUIZ_RESULTS, CERTIFICATES, generate_certificate_text,
     DAILY_FORTUNES, get_daily_fortune, generate_random_roulette,
     MAGAZINE_TITLES
 )
+
+SITE_PHOTOS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site_photos")
+os.makedirs(SITE_PHOTOS_DIR, exist_ok=True)
 
 # UTF-8 stdout sozlamalari (Windows da emojilar bilan xatolik chiqmasligi uchun)
 if hasattr(sys.stdout, "reconfigure"):
@@ -91,6 +95,15 @@ class MagazineForm(StatesGroup):
     uploading_photo = State()
     entering_name = State()
     choosing_title = State()
+
+class LeaderboardForm(StatesGroup):
+    uploading_photo = State()
+    entering_name = State()
+    choosing_title = State()
+    uploading_check = State()
+
+class AdminCustomAmountForm(StatesGroup):
+    entering_amount = State()
 
 class AdminBroadcastForm(StatesGroup):
     entering_message = State()
@@ -230,6 +243,9 @@ def get_reply_main_keyboard(user_id: int = 0):
             KeyboardButton(text="🌟 VIP Jurnal Muqovasi")
         ],
         [
+            KeyboardButton(text="👑 Saytdagi Top Boyvachchalar")
+        ],
+        [
             KeyboardButton(text="🧠 Qaysi Personajsan?"),
             KeyboardButton(text="📜 Parodiya Sertifikat")
         ],
@@ -253,7 +269,8 @@ def get_main_menu_keyboard(user_id: int = 0):
             InlineKeyboardButton(text="🎭 Tabrik Yaratish (Bepul)", callback_data="start_create")
         ],
         [
-            InlineKeyboardButton(text="🌟 VIP Jurnal Muqovasi (Forbes)", callback_data="start_magazine")
+            InlineKeyboardButton(text="🌟 VIP Jurnal Muqovasi (Forbes)", callback_data="start_magazine"),
+            InlineKeyboardButton(text="👑 Saytdagi Top Boyvachchalar", callback_data="top_leaderboard")
         ],
         [
             InlineKeyboardButton(text="🧠 Qaysi Personajsan? (Test)", callback_data="start_quiz"),
@@ -513,6 +530,17 @@ async def r_my_greetings(message: Message):
 @router.message(F.text == "🌟 VIP Jurnal Muqovasi")
 async def r_vip_magazine(message: Message, state: FSMContext):
     await start_magazine_intro(message, state)
+
+@router.message(F.text == "👑 Saytdagi Top Boyvachchalar")
+@router.message(Command("top"))
+async def r_top_leaderboard(message: Message, state: FSMContext):
+    await state.clear()
+    await show_leaderboard_summary(message)
+
+@router.callback_query(F.data == "top_leaderboard")
+async def cb_top_leaderboard(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await show_leaderboard_summary(call)
 
 @router.message(F.text == "🌟 Barcha Personajlar")
 async def r_all_characters(message: Message):
@@ -1369,6 +1397,425 @@ async def mag_title_chosen(call: CallbackQuery, state: FSMContext, bot: Bot):
                 os.remove(output_jpg)
             except Exception:
                 pass
+
+# -------------------------------------------------------------
+# 13.5 SAYT REYTINGI — TOP BOYVACHCHALAR & SHON-SHARAF TAXTASI
+# -------------------------------------------------------------
+LEADERBOARD_TITLES = {
+    "boyvachcha": {"title": "Toshkentning Eng Katta Boyvachchasi", "icon": "👑"},
+    "homiy": {"title": "Choyxona Bosh Homiysi", "icon": "☕️"},
+    "milliarder": {"title": "Kelajak Milliarderi & Shef", "icon": "💼"},
+    "saxiy": {"title": "Poytaxtning Eng Saxiy Insoni", "icon": "💎"},
+    "qahramon": {"title": "Yil Qahramoni & Do'stlar Sarvari", "icon": "🌟"},
+    "tezkor": {"title": "Poytaxtning Eng Tezkor Do'sti", "icon": "🏎"}
+}
+
+async def show_leaderboard_summary(event: TelegramObject):
+    entries = await database.get_top_leaderboard(limit=5)
+    stats = await database.get_leaderboard_stats()
+    
+    total_part = stats.get("total_participants", 0)
+    top_record = stats.get("highest_donation", 0)
+    
+    text = (
+        "👑 <b>FORBES UZBEKISTAN — TOP BOYVACHCHALAR REYTINGI!</b> 🏆\n\n"
+        "Do'stini eng ko'p qo'llab-quvvatlagan, qadriga yetgan va pul o'tkazgan insonlar jonli veb-saytimiz shon-sharaf taxtasida <b>1-o'rin, 2-o'rin, 3-o'rin</b> bo'lib turishadi!\n\n"
+        f"👥 <b>Jami boyvachchalar:</b> {total_part} ta\n"
+        f"🥇 <b>1-O'rin rekordi:</b> {top_record:,} so'm\n\n"
+        "🔥 <b>Hozirgi Top Yetakchilar:</b>\n"
+    )
+    
+    if entries:
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        for idx, item in enumerate(entries[:5]):
+            m_icon = medals[idx] if idx < len(medals) else "⭐️"
+            name = html.escape(item.get("friend_name", "Noma'lum"))
+            amt = item.get("amount", 0)
+            u_title = html.escape(item.get("friend_title", "Boyvachcha"))
+            text += f"{m_icon} <b>{name}</b> ({amt:,} so'm) — <i>{u_title}</i>\n"
+    else:
+        text += "<i>Hozircha reyting bo'sh! Birinchi bo'lib do'stingizni #1 o'ringa chiqaring!</i>\n"
+        
+    text += (
+        "\n🌐 <b>Jonli veb-sayt:</b> <code>https://telegrambot-wtzt.onrender.com/leaderboard</code>\n\n"
+        "<i>Siz ham do'stingizning rasmi va ismini saytga joylab, #1 o'ringa chiqarmoqchimisiz?</i>"
+    )
+    
+    buttons = [
+        [
+            InlineKeyboardButton(text="🌐 Saytda Jonli Ko'rish (Web)", url="https://telegrambot-wtzt.onrender.com/leaderboard")
+        ],
+        [
+            InlineKeyboardButton(text="🚀 Do'stimni Saytga Joylash (+ O'rin Olish)", callback_data="start_submit_leaderboard")
+        ]
+    ]
+    if config.is_admin(event.from_user.id):
+        buttons.append([InlineKeyboardButton(text="👑 Bepul Test Qilish (Admin)", callback_data="ldb_free_admin")])
+    buttons.append([
+        InlineKeyboardButton(text="🔄 Yangilash", callback_data="top_leaderboard"),
+        InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
+    ])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    if isinstance(event, CallbackQuery):
+        await event.message.answer(text, parse_mode="HTML", reply_markup=kb)
+        await event.answer()
+    else:
+        await event.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data == "start_submit_leaderboard")
+async def start_submit_leaderboard_cb(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await state.set_state(LeaderboardForm.uploading_photo)
+    
+    prompt = (
+        "📸 <b>1-Qadam: Do'stingizning fotosuratini yuboring!</b>\n\n"
+        "Saytda hamma ko'rishi uchun do'stingizning (yoki o'zingizning) yaxshi tushgan rasmini (rasm yoki fayl ko'rinishida) yuboring."
+    )
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")]]
+    )
+    await call.message.answer(prompt, parse_mode="HTML", reply_markup=cancel_kb)
+    await call.answer()
+
+@router.callback_query(F.data == "ldb_free_admin")
+async def ldb_free_admin_cb(call: CallbackQuery, bot: Bot):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Faqat admin uchun!", show_alert=True)
+        return
+        
+    sample_names = ["Jasur Bekmirzayev", "Sardor Rahimov", "Madina Aliyeva", "Bobur Mirzayev"]
+    sample_titles = ["Toshkentning Eng Katta Boyvachchasi", "Choyxona Bosh Homiysi", "Kelajak Milliarderi & Shef", "Poytaxtning Eng Saxiy Insoni"]
+    sample_amts = [150000, 80000, 45000, 20000]
+    
+    stats = await database.get_leaderboard_stats()
+    idx = stats["total_participants"] % len(sample_names)
+    
+    await database.add_leaderboard_entry(
+        user_id=call.from_user.id,
+        friend_name=sample_names[idx],
+        friend_title=sample_titles[idx],
+        image_filename="",
+        amount=sample_amts[idx],
+        status="approved",
+        receipt_id=0
+    )
+    
+    await call.answer(f"👑 Test: {sample_names[idx]} saytga joylandi ({sample_amts[idx]:,} so'm)!", show_alert=True)
+    await show_leaderboard_summary(call)
+
+@router.message(LeaderboardForm.uploading_photo, F.photo | F.document)
+async def ldb_photo_received(message: Message, state: FSMContext, bot: Bot):
+    filename = f"friend_{message.from_user.id}_{int(time.time())}.jpg"
+    dest_path = os.path.join(SITE_PHOTOS_DIR, filename)
+    
+    try:
+        if message.photo:
+            photo = message.photo[-1]
+            await bot.download(photo, destination=dest_path)
+        elif message.document:
+            await bot.download(message.document, destination=dest_path)
+    except Exception as e:
+        logger.error(f"Reyting rasmini yuklashda xatolik: {e}")
+        await message.answer("❌ Rasmni yuklab olishda xatolik bo'ldi. Iltimos, qaytadan boshqa rasm yuborib ko'ring.")
+        return
+        
+    await state.update_data(image_filename=filename)
+    await state.set_state(LeaderboardForm.entering_name)
+    
+    prompt = (
+        "✍️ <b>2-Qadam: Do'stingizning Ism va Familiyasini yozing:</b>\n\n"
+        "Sayt shon-sharaf taxtasida shu ism chiqadi. Masalan: <code>Jasur Bekmirzayev</code>"
+    )
+    await message.answer(prompt, parse_mode="HTML")
+
+@router.message(LeaderboardForm.uploading_photo)
+async def ldb_photo_fallback(message: Message):
+    await message.answer("⚠️ <b>Iltimos, do'stingizning fotosuratini (rasm yoki rasm fayli) yuboring!</b>", parse_mode="HTML")
+
+@router.message(LeaderboardForm.entering_name, F.text)
+async def ldb_name_received(message: Message, state: FSMContext):
+    name = message.text.strip()
+    if len(name) < 2 or len(name) > 45:
+        await message.answer("⚠️ Iltimos, ismni to'g'ri kiriting (2 tadan 45 ta harfgacha).")
+        return
+        
+    await state.update_data(friend_name=name)
+    await state.set_state(LeaderboardForm.choosing_title)
+    
+    prompt = (
+        f"👑 <b>3-Qadam: {html.escape(name)} uchun rasmiy unvon tanlang:</b>\n\n"
+        "Quyidagi unvonlardan birini bosing:"
+    )
+    buttons = []
+    for t_key, t_info in LEADERBOARD_TITLES.items():
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{t_info['icon']} {t_info['title']}",
+                callback_data=f"ldb_title_{t_key}"
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await message.answer(prompt, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(LeaderboardForm.choosing_title, F.data.startswith("ldb_title_"))
+async def ldb_title_chosen(call: CallbackQuery, state: FSMContext):
+    t_key = call.data.replace("ldb_title_", "")
+    t_info = LEADERBOARD_TITLES.get(t_key, list(LEADERBOARD_TITLES.values())[0])
+    friend_title = t_info["title"]
+    
+    await state.update_data(friend_title=friend_title)
+    await state.set_state(LeaderboardForm.uploading_check)
+    
+    card_number = getattr(config, "PAYMENT_CARD", "4067070008610359")
+    min_amount = getattr(config, "MIN_PAYMENT_AMOUNT", 1000)
+    
+    prompt = (
+        "🧾 <b>4-Qadam: Saytdagi O'rin Uchun To'lov</b>\n\n"
+        f"1. Karta raqamiga <b>ixtiyoriy summa (kamida {min_amount:,} so'm)</b> o'tkazing:\n"
+        f"💳 <code>{card_number}</code>\n"
+        "<i>(Karta raqami ustiga bossangiz, avtomatik nusxalanadi 📲)</i>\n"
+        "To'lov ilovalari: <b>Click / Payme / Uzum / Paynet</b>\n\n"
+        "🔥 <b>QOIDA:</b> Qancha ko'p summa o'tkazsangiz, do'stingiz sayt reytingida shuncha yuqori (hatto <b>🥇 1-O'RINGA!</b>) chiqadi!\n\n"
+        "2. To'lov amalga oshirilgach, chekning <b>skrinshotini</b> yoki <b>faylini</b> shu yerga yuboring.\n\n"
+        "<i>Chek adminga tekshirish uchun yuboriladi va tasdiqlanishi bilan do'stingiz darhol jonli saytga joylanadi!</i>"
+    )
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")]]
+    )
+    await call.message.edit_text(prompt, parse_mode="HTML", reply_markup=cancel_kb)
+    await call.answer()
+
+@router.message(LeaderboardForm.uploading_check, F.photo | F.document)
+async def ldb_check_received(message: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    await state.clear()
+    
+    friend_name = data.get("friend_name", "Yil Boyvachchasi")
+    friend_title = data.get("friend_title", "Do'stlar Sarvari")
+    image_filename = data.get("image_filename", "")
+    
+    file_id = message.photo[-1].file_id if message.photo else message.document.file_id
+    file_type = "photo" if message.photo else "document"
+    min_amount = getattr(config, "MIN_PAYMENT_AMOUNT", 1000)
+    
+    receipt_id = await database.save_payment_receipt(
+        user_id=message.from_user.id,
+        full_name=message.from_user.full_name,
+        username=message.from_user.username,
+        file_id=file_id,
+        file_type=file_type,
+        amount=min_amount
+    )
+    
+    entry_id = await database.add_leaderboard_entry(
+        user_id=message.from_user.id,
+        friend_name=friend_name,
+        friend_title=friend_title,
+        image_filename=image_filename,
+        amount=min_amount,
+        status="pending",
+        receipt_id=receipt_id
+    )
+    
+    admin_caption = (
+        f"👑 <b>YANGI SAYT REYTINGI TALABI! (Do'stini saytga joylamoqchi)</b>\n\n"
+        f"👤 <b>Yuboruvchi:</b> {html.escape(message.from_user.full_name)} (ID: <code>{message.from_user.id}</code>)\n"
+        f"📸 <b>Saytga chiqadigan do'st:</b> <b>{html.escape(friend_name)}</b>\n"
+        f"👑 <b>Unvoni:</b> {html.escape(friend_title)}\n"
+        f"🧾 <b>Chek ID:</b> #{receipt_id}\n\n"
+        "<i>To'lov summasiga qarab saytda o'rni belgilanadi. Chekdagi summani tasdiqlang:</i>"
+    )
+    
+    admin_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ 1,000 so'm", callback_data=f"adm_ldb_app_{entry_id}_1000"),
+                InlineKeyboardButton(text="✅ 5,000 so'm", callback_data=f"adm_ldb_app_{entry_id}_5000")
+            ],
+            [
+                InlineKeyboardButton(text="✅ 10,000 so'm", callback_data=f"adm_ldb_app_{entry_id}_10000"),
+                InlineKeyboardButton(text="✅ 20,000 so'm", callback_data=f"adm_ldb_app_{entry_id}_20000")
+            ],
+            [
+                InlineKeyboardButton(text="✅ 50,000 so'm", callback_data=f"adm_ldb_app_{entry_id}_50000"),
+                InlineKeyboardButton(text="✅ 100,000 so'm (Qirol)", callback_data=f"adm_ldb_app_{entry_id}_100000")
+            ],
+            [
+                InlineKeyboardButton(text="✍️ Boshqa Summa Kiritish", callback_data=f"adm_ldb_custom_{entry_id}")
+            ],
+            [
+                InlineKeyboardButton(text="❌ Rad etish", callback_data=f"adm_ldb_rej_{entry_id}")
+            ]
+        ]
+    )
+    
+    try:
+        if message.photo:
+            await bot.send_photo(
+                chat_id=config.ADMIN_ID,
+                photo=file_id,
+                caption=admin_caption,
+                parse_mode="HTML",
+                reply_markup=admin_kb
+            )
+        else:
+            await bot.send_document(
+                chat_id=config.ADMIN_ID,
+                document=file_id,
+                caption=admin_caption,
+                parse_mode="HTML",
+                reply_markup=admin_kb
+            )
+        await message.answer(
+            f"✅ <b>Chekingiz qabul qilindi (Chek #{receipt_id})!</b>\n\n"
+            f"Administrator to'lovni tasdiqlashi bilan <b>{html.escape(friend_name)}</b> darhol sayt shon-sharaf taxtasiga chiqadi.\n"
+            "🌐 Sayt havolasi: https://telegrambot-wtzt.onrender.com/leaderboard",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Adminga reyting chekini jo'natishda xatolik: {e}")
+        await message.answer(f"⚠️ Chekni adminga jo'natishda xatolik yuz berdi: {e}")
+
+@router.callback_query(F.data.startswith("adm_ldb_app_"))
+async def adm_ldb_app_cb(call: CallbackQuery, bot: Bot):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+        
+    parts = call.data.replace("adm_ldb_app_", "").split("_")
+    entry_id = int(parts[0])
+    amount = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1000
+    
+    entry = await database.update_leaderboard_status(entry_id, status="approved", amount=amount)
+    if not entry:
+        await call.answer("Yozuv topilmadi!", show_alert=True)
+        return
+        
+    if entry.get("receipt_id"):
+        await database.update_receipt_status(entry["receipt_id"], status="approved")
+        
+    await call.answer(f"✅ {amount:,} so'm bilan saytga joylandi!", show_alert=True)
+    
+    try:
+        await call.message.edit_caption(
+            caption=(call.message.caption or "") + f"\n\n✅ <b>ADMIN TASDIQLADI! SAYTGA JOYLANDI: {amount:,} SO'M</b>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+        
+    user_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Saytda Ko'rish (Jonli)", url="https://telegrambot-wtzt.onrender.com/leaderboard")]
+        ]
+    )
+    try:
+        await bot.send_message(
+            chat_id=entry["user_id"],
+            text=(
+                f"🎉 <b>Tabriklaymiz! Do'stingiz «{html.escape(entry['friend_name'])}» Forbes Uzbekistan sayt reytingiga muvaffaqiyatli joylashtirildi!</b>\n\n"
+                f"💰 <b>Kiritilgan summa:</b> {amount:,} so'm\n"
+                f"👑 <b>Unvoni:</b> {html.escape(entry['friend_title'])}\n\n"
+                "Quyidagi havola orqali o'zingiz va do'stingiz saytda qaysi o'rindaligini ko'ring:"
+            ),
+            parse_mode="HTML",
+            reply_markup=user_kb
+        )
+    except Exception as e:
+        logger.warning(f"Foydalanuvchiga tasdiq xabarini yuborishda xatolik: {e}")
+
+@router.callback_query(F.data.startswith("adm_ldb_custom_"))
+async def adm_ldb_custom_cb(call: CallbackQuery, state: FSMContext):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+        
+    entry_id = int(call.data.replace("adm_ldb_custom_", ""))
+    await state.update_data(target_entry_id=entry_id)
+    await state.set_state(AdminCustomAmountForm.entering_amount)
+    
+    await call.message.answer(
+        f"✍️ <b>Yozuv #{entry_id} uchun tasdiqlanadigan summani kiriting:</b>\n"
+        "Faqat son yozing, masalan: <code>15000</code> yoki <code>250000</code>",
+        parse_mode="HTML"
+    )
+    await call.answer()
+
+@router.message(AdminCustomAmountForm.entering_amount, F.text)
+async def adm_custom_amount_received(message: Message, state: FSMContext, bot: Bot):
+    if not config.is_admin(message.from_user.id):
+        return
+        
+    raw_text = message.text.strip().replace(" ", "").replace(",", "")
+    if not raw_text.isdigit():
+        await message.answer("⚠️ Iltimos, faqat musbat son kiriting (masalan: 15000).")
+        return
+        
+    amount = int(raw_text)
+    data = await state.get_data()
+    await state.clear()
+    
+    entry_id = data.get("target_entry_id", 0)
+    entry = await database.update_leaderboard_status(entry_id, status="approved", amount=amount)
+    if not entry:
+        await message.answer("❌ Yozuv topilmadi.")
+        return
+        
+    if entry.get("receipt_id"):
+        await database.update_receipt_status(entry["receipt_id"], status="approved")
+        
+    await message.answer(f"✅ <b>Muvaffaqiyatli tasdiqlandi!</b> «{entry['friend_name']}» saytga <b>{amount:,} so'm</b> bilan joylandi!", parse_mode="HTML")
+    
+    user_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Saytda Ko'rish (Jonli)", url="https://telegrambot-wtzt.onrender.com/leaderboard")]
+        ]
+    )
+    try:
+        await bot.send_message(
+            chat_id=entry["user_id"],
+            text=(
+                f"🎉 <b>Tabriklaymiz! Do'stingiz «{html.escape(entry['friend_name'])}» Forbes Uzbekistan sayt reytingiga muvaffaqiyatli joylashtirildi!</b>\n\n"
+                f"💰 <b>Kiritilgan summa:</b> {amount:,} so'm\n"
+                f"👑 <b>Unvoni:</b> {html.escape(entry['friend_title'])}\n\n"
+                "Quyidagi havola orqali o'zingiz va do'stingiz saytda qaysi o'rindaligini ko'ring:"
+            ),
+            parse_mode="HTML",
+            reply_markup=user_kb
+        )
+    except Exception:
+        pass
+
+@router.callback_query(F.data.startswith("adm_ldb_rej_"))
+async def adm_ldb_rej_cb(call: CallbackQuery, bot: Bot):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+        
+    entry_id = int(call.data.replace("adm_ldb_rej_", ""))
+    entry = await database.update_leaderboard_status(entry_id, status="rejected")
+    if entry and entry.get("receipt_id"):
+        await database.update_receipt_status(entry["receipt_id"], status="rejected")
+        
+    await call.answer("❌ Chek rad etildi.", show_alert=True)
+    try:
+        await call.message.edit_caption(
+            caption=(call.message.caption or "") + "\n\n❌ <b>TO'LOV RAD ETILDI (SAYTGA JOYLANMADI)</b>",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    if entry:
+        try:
+            await bot.send_message(
+                chat_id=entry["user_id"],
+                text="❌ <b>Kechirasiz, sayt reytingi uchun yuborgan to'lov chekingiz tasdiqlanmadi.</b>\nIltimos, haqiqiy to'lov skrinshotini yuboring.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
 async def send_generated_audio(bot: Bot, user_id: int, greeting_id_str: str, notify_msg: Optional[Message] = None):
     """Audio fayl yasab foydalanuvchiga jo'natish yordamchisi."""
@@ -2521,10 +2968,27 @@ async def handle_health(request: web.Request) -> web.Response:
         "anti_sleep": "enabled"
     })
 
+async def handle_leaderboard(request: web.Request) -> web.Response:
+    entries = await database.get_top_leaderboard(limit=100)
+    stats = await database.get_leaderboard_stats()
+    html_text = leaderboard_web.render_leaderboard_html(entries, stats, bot_username="parodiya_tabrik_uzbot")
+    return web.Response(text=html_text, content_type="text/html", charset="utf-8")
+
+async def handle_leaderboard_photo(request: web.Request) -> web.StreamResponse:
+    raw_filename = request.match_info.get("filename", "")
+    filename = os.path.basename(raw_filename)
+    file_path = os.path.join(SITE_PHOTOS_DIR, filename)
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        return web.FileResponse(file_path)
+    return web.Response(status=404, text="Rasm topilmadi")
+
 def create_web_server() -> web.Application:
     app = web.Application()
     app.router.add_get("/", handle_root)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/leaderboard", handle_leaderboard)
+    app.router.add_get("/top", handle_leaderboard)
+    app.router.add_get("/photo/{filename}", handle_leaderboard_photo)
     return app
 
 # -------------------------------------------------------------
@@ -2598,6 +3062,7 @@ async def main():
             BotCommand(command="quiz", description="🧠 'Qaysi personajsan?' kulgili test"),
             BotCommand(command="certificate", description="📜 Rasmiy parodiya diplom"),
             BotCommand(command="magazine", description="🌟 VIP Forbes Jurnali Muqovasi (Rasmli)"),
+            BotCommand(command="top", description="👑 Saytdagi Top Boyvachchalar Reytingi"),
             BotCommand(command="roulette", description="🎲 Omad barabani"),
             BotCommand(command="fortune", description="🔮 Kunlik bashorat"),
             BotCommand(command="characters", description="🌟 Barcha 8 ta personaj"),

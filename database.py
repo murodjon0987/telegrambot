@@ -102,6 +102,23 @@ def _init_db_sync():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_greetings_user ON greetings(user_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_receipts_status ON payment_receipts(status);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_receipts_user ON payment_receipts(user_id);")
+        
+        # 5. Sayt reytingi (Top Boyvachchalar & Do'stlar shon-sharaf taxtasi)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS site_leaderboard (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                friend_name TEXT NOT NULL,
+                friend_title TEXT DEFAULT 'Yil Boyvachchasi',
+                image_filename TEXT NOT NULL,
+                amount INTEGER NOT NULL DEFAULT 1000,
+                status TEXT DEFAULT 'approved',
+                receipt_id INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_leaderboard_amount ON site_leaderboard(amount DESC);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_leaderboard_status ON site_leaderboard(status);")
         conn.commit()
 
 async def init_db():
@@ -678,3 +695,113 @@ def _get_payment_stats_sync() -> Dict[str, Any]:
 async def get_payment_stats() -> Dict[str, Any]:
     """To'lovlar bo'yicha to'liq statistika."""
     return await asyncio.to_thread(_get_payment_stats_sync)
+
+# -------------------------------------------------------------
+# SAYT REYTINGI (TOP BOYVACHCHALAR & SHON-SHARAF TAXTASI)
+# -------------------------------------------------------------
+def _add_leaderboard_entry_sync(
+    user_id: int,
+    friend_name: str,
+    friend_title: str,
+    image_filename: str,
+    amount: int = 1000,
+    status: str = "approved",
+    receipt_id: int = 0
+) -> int:
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO site_leaderboard (user_id, friend_name, friend_title, image_filename, amount, status, receipt_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, friend_name, friend_title, image_filename, amount, status, receipt_id, now_str))
+        conn.commit()
+        return cursor.lastrowid or 0
+
+async def add_leaderboard_entry(
+    user_id: int,
+    friend_name: str,
+    friend_title: str,
+    image_filename: str,
+    amount: int = 1000,
+    status: str = "approved",
+    receipt_id: int = 0
+) -> int:
+    """Do'stni sayt reytingiga qo'shish."""
+    return await asyncio.to_thread(
+        _add_leaderboard_entry_sync,
+        user_id, friend_name, friend_title, image_filename, amount, status, receipt_id
+    )
+
+def _get_top_leaderboard_sync(limit: int = 50) -> List[Dict[str, Any]]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM site_leaderboard
+            WHERE status = 'approved'
+            ORDER BY amount DESC, id ASC
+            LIMIT ?
+        """, (limit,))
+        return [dict(r) for r in cursor.fetchall()]
+
+async def get_top_leaderboard(limit: int = 50) -> List[Dict[str, Any]]:
+    """Sayt uchun Top boyvachchalar reytingini olish (summa bo'yicha kamayish tartibida)."""
+    return await asyncio.to_thread(_get_top_leaderboard_sync, limit)
+
+def _get_leaderboard_entry_by_id_sync(entry_id: int) -> Optional[Dict[str, Any]]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM site_leaderboard WHERE id = ?", (entry_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+async def get_leaderboard_entry_by_id(entry_id: int) -> Optional[Dict[str, Any]]:
+    return await asyncio.to_thread(_get_leaderboard_entry_by_id_sync, entry_id)
+
+def _get_leaderboard_entry_by_receipt_sync(receipt_id: int) -> Optional[Dict[str, Any]]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM site_leaderboard WHERE receipt_id = ?", (receipt_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+async def get_leaderboard_entry_by_receipt(receipt_id: int) -> Optional[Dict[str, Any]]:
+    return await asyncio.to_thread(_get_leaderboard_entry_by_receipt_sync, receipt_id)
+
+def _update_leaderboard_status_sync(entry_id: int, status: str, amount: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        if amount is not None and amount > 0:
+            cursor.execute("""
+                UPDATE site_leaderboard
+                SET status = ?, amount = ?
+                WHERE id = ?
+            """, (status, amount, entry_id))
+        else:
+            cursor.execute("""
+                UPDATE site_leaderboard
+                SET status = ?
+                WHERE id = ?
+            """, (status, entry_id))
+        conn.commit()
+        cursor.execute("SELECT * FROM site_leaderboard WHERE id = ?", (entry_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+async def update_leaderboard_status(entry_id: int, status: str, amount: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Reyting yozuvini tasdiqlash yoki rad etish."""
+    return await asyncio.to_thread(_update_leaderboard_status_sync, entry_id, status, amount)
+
+def _get_leaderboard_stats_sync() -> Dict[str, Any]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*), COALESCE(SUM(amount), 0), COALESCE(MAX(amount), 0) FROM site_leaderboard WHERE status = 'approved'")
+        row = cursor.fetchone()
+        return {
+            "total_participants": row[0] or 0,
+            "total_donations": row[1] or 0,
+            "highest_donation": row[2] or 0
+        }
+
+async def get_leaderboard_stats() -> Dict[str, Any]:
+    return await asyncio.to_thread(_get_leaderboard_stats_sync)
