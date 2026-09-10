@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import time
+import urllib.parse
 from datetime import datetime
 
 from aiohttp import web  # pyrefly: ignore [missing-import] # type: ignore
@@ -18,7 +19,10 @@ from aiogram.types import (  # pyrefly: ignore [missing-import] # type: ignore
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     TelegramObject,
-    FSInputFile
+    FSInputFile,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent
 )
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramForbiddenError  # pyrefly: ignore [missing-import] # type: ignore
 
@@ -148,6 +152,34 @@ class MandatorySubscriptionMiddleware(BaseMiddleware):
         
         return await handler(event, data)
 
+class ThrottlingMiddleware(BaseMiddleware):
+    """Foydalanuvchilar tugmalarni ketma-ket haddan tashqari tez bosib spam qilmasligi uchun (0.5 soniya cheklov)."""
+    def __init__(self, limit: float = 0.5):
+        self.limit = limit
+        self.last_actions = {}
+
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        user = data.get("event_from_user")
+        if not user or config.is_admin(user.id):
+            return await handler(event, data)
+
+        now = time.time()
+        last_time = self.last_actions.get(user.id, 0.0)
+
+        if now - last_time < self.limit:
+            if isinstance(event, CallbackQuery):
+                await event.answer("⚠️ Iltimos, biroz kuting...", show_alert=False)
+            return
+
+        self.last_actions[user.id] = now
+
+        # Xotira tozalash (1000 tadan oshganda)
+        if len(self.last_actions) > 1000:
+            threshold = now - 60
+            self.last_actions = {uid: t for uid, t in self.last_actions.items() if t > threshold}
+
+        return await handler(event, data)
+
 # -------------------------------------------------------------
 # 5. MENYU KLAVIATURALARI
 # -------------------------------------------------------------
@@ -231,13 +263,17 @@ def get_professions_keyboard():
     buttons.append([InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_result_keyboard(share_text: str):
+def get_result_keyboard(share_text: str, full_message: str = ""):
+    text_to_share = full_message if full_message else share_text
+    encoded_text = urllib.parse.quote(text_to_share)
+    telegram_share_url = f"https://t.me/share/url?url=https://t.me/parodiya_tabrik_uzbot&text={encoded_text}"
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📲 Do'stga Ulashish (Share)",
-                    switch_inline_query=share_text[:50]
+                    text="📲 Do'stga Ulashish (Telegram)",
+                    url=telegram_share_url
                 )
             ],
             [
@@ -255,6 +291,8 @@ def get_result_keyboard(share_text: str):
 router = Router()
 
 # Middlewarelarni ro'yxatdan o'tkazish
+router.message.middleware(ThrottlingMiddleware())
+router.callback_query.middleware(ThrottlingMiddleware())
 router.message.middleware(UserTrackingMiddleware())
 router.callback_query.middleware(UserTrackingMiddleware())
 router.message.middleware(MandatorySubscriptionMiddleware())
@@ -302,6 +340,18 @@ async def cmd_start(message: Message, state: FSMContext):
         "Quyidagi tugmani bosing va tabrik yarating:"
     )
     await message.answer(welcome_text, parse_mode="HTML", reply_markup=get_main_menu_keyboard(message.from_user.id))
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await database.log_activity(
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        full_name=message.from_user.full_name,
+        action="CANCEL",
+        details="Amalni bekor qildi (/cancel)"
+    )
+    await message.answer("❌ Harakat bekor qilindi. Asosiy menyudasiz:", reply_markup=get_main_menu_keyboard(message.from_user.id))
 
 @router.callback_query(F.data == "back_to_menu")
 async def back_to_menu_handler(call: CallbackQuery, state: FSMContext):
@@ -491,7 +541,10 @@ async def character_chosen_handler(call: CallbackQuery, state: FSMContext):
         "Do'stingizning yoki yaqiningizning <b>Ismini</b> yozib yuboring:\n"
         "<i>(Masalan: Sardor, Madina, Jasur)</i>"
     )
-    await call.message.edit_text(text, parse_mode="HTML")
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")]]
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=cancel_kb)
     await call.answer()
 
 @router.message(GreetingForm.entering_recipient)
@@ -538,7 +591,10 @@ async def profession_chosen_handler(call: CallbackQuery, state: FSMContext):
         "O'z ismingizni yoki laqabingizni yozib yuboring:\n"
         "<i>(Masalan: Do'stingiz Alisher, Sinfdoshlar, Bojxona jamoasi)</i>"
     )
-    await call.message.edit_text(text, parse_mode="HTML")
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")]]
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=cancel_kb)
     await call.answer()
 
 @router.message(GreetingForm.entering_sender)
@@ -590,11 +646,51 @@ async def sender_entered_handler(message: Message, state: FSMContext):
         f"<pre><code class=\"language-text\">{generated_text}</code></pre>"
     )
     
+    share_caption = (
+        f"{generated_text}\n\n"
+        "🎭 Siz ham yaqinlaringizga shunday eksklyuziv parodiya tabrik yaratmoqchimisiz?\n"
+        "👉 Bepul bot: @parodiya_tabrik_uzbot"
+    )
+
     await message.answer(
         result_text,
         parse_mode="HTML",
-        reply_markup=get_result_keyboard(f"{recipient_name} uchun eksklyuziv xabar!")
+        reply_markup=get_result_keyboard(f"{recipient_name} uchun eksklyuziv xabar!", share_caption)
     )
+
+@router.inline_query()
+async def inline_query_handler(query: InlineQuery):
+    raw_text = query.query.strip()
+    recipient = raw_text if raw_text else "Do'stim"
+
+    results = []
+    sample_chars = [
+        ("boyvachcha", "Saxiy Boyvachcha Otaxon", "💰"),
+        ("gai", "Katta Leytenant (GAI)", "👮"),
+        ("savdogar", "Malika Savdogari", "🍏"),
+        ("mafioz", "Don Karleone (Shef)", "🕶️"),
+        ("shoir", "Shoir Bobo", "📜")
+    ]
+
+    for idx, (c_key, c_name, c_icon) in enumerate(sample_chars, 1):
+        msg = generate_custom_message(c_key, recipient, "greeting", "general", "Do'stingiz")
+        share_content = (
+            f"{msg}\n\n"
+            "🎭 Siz ham yaqinlaringizga shunday tabrik yaratish uchun botga kiring:\n"
+            "👉 @parodiya_tabrik_uzbot"
+        )
+        results.append(
+            InlineQueryResultArticle(
+                id=f"inline_{c_key}_{idx}",
+                title=f"{c_icon} {c_name} nomidan tabrik",
+                description=f"{recipient} uchun eksklyuziv parodiya tabrik",
+                input_message_content=InputTextMessageContent(
+                    message_text=share_content,
+                    parse_mode="Markdown"
+                )
+            )
+        )
+    await query.answer(results, cache_time=10, is_personal=True)
 
 # -------------------------------------------------------------
 # 7. ADMIN PANEL (FAQAT ID: 6268220201 UCHUN)
