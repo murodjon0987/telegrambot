@@ -426,7 +426,7 @@ def get_result_keyboard(share_text: str, full_message: str = "", greeting_id: in
                 InlineKeyboardButton(text="🌟 Do'stga VIP Jurnal Muqovasi Yasash", callback_data="start_magazine")
             ],
             [
-                InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+10 Ball)", url=telegram_share_url)
+                InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+1 Ball)", url=telegram_share_url)
             ],
             [
                 InlineKeyboardButton(text="👥 Botni Guruhga Qo'shish (Prank)", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true")
@@ -475,7 +475,6 @@ async def check_subscription_callback(call: CallbackQuery, bot: Bot, state: FSMC
         welcome_text = (
             f"Assalomu alaykum, <b>{html.escape(call.from_user.first_name)}</b>! 🎭\n\n"
             "<b>«Parodiya Tabrik & Qutlovlar»</b> botiga xush kelibsiz!\n\n"
-            "Sizga boshlang'ich <b>+5 ball</b> bonus berildi! 🎁\n"
             "Quyidagi qiziqarli bo'limlardan birini tanlang va yaqinlaringizga ajoyib kayfiyat ulashing:"
         )
         await call.message.answer(welcome_text, parse_mode="HTML", reply_markup=get_main_menu_keyboard(call.from_user.id))
@@ -535,7 +534,7 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
             try:
                 ref_notice = (
                     f"🎉 <b>Do'stingiz {html.escape(message.from_user.first_name)} botga qo'shildi!</b>\n\n"
-                    "Sizga <b>+10 ball</b> taqdim etildi! 🎁\n"
+                    "Sizga <b>+1 ball</b> taqdim etildi! 🎁\n"
                     "Profilingiz va yutuqlaringizni ko'rish uchun /profile buyrug'ini bosing."
                 )
                 await bot.send_message(chat_id=bonus_ref_id, text=ref_notice, parse_mode="HTML")
@@ -670,10 +669,8 @@ async def my_profile_handler(event: TelegramObject):
 
     text += (
         "💡 <b>Ballarni qanday to'plash mumkin?</b>\n"
-        "• Har bir do'stni taklif qilganda: <b>+10 ball</b>\n"
-        "• Tabrik yoki Sertifikat yaratganda: <b>+2 ball</b>\n"
-        "• Viktorina testidan o'tganda: <b>+5 ball</b>\n"
-        "• Kunlik bashoratni tekshirganda: <b>+1 ball</b>\n\n"
+        "• Har bir do'stni taklif qilganda: <b>+1 ball</b>\n\n"
+        "<i>Ballar orqali profilingiz unvonini oshirishingiz va nufuzingizni ko'rsatishingiz mumkin!</i>\n\n"
         f"🔗 <b>Sizning shaxsiy referral havolangiz:</b>\n"
         f"<code>{ref_link}</code>"
     )
@@ -681,7 +678,7 @@ async def my_profile_handler(event: TelegramObject):
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="📲 Do'stlarni Taklif Qilish (+10 ball)", url=share_url)
+                InlineKeyboardButton(text="📲 Do'stlarni Taklif Qilish (+1 ball)", url=share_url)
             ],
             [
                 InlineKeyboardButton(text="🏆 Top 10 Peshqadamlar", callback_data="leaderboard")
@@ -758,20 +755,20 @@ async def contest_handler(event: TelegramObject):
         "Do'stlaringizni botga taklif qiling va qimmatbaho sovg'alarga ega bo'ling!\n\n"
         "👑 <b>G'oliblarga Sovg'alar:</b>\n"
         "🥇 <b>1-o'rin:</b> Top Boyvachchalar Reytingida #1 Oltin O'rin + VIP Jurnal (Mutlaqo Bepul!)\n"
-        "🥈 <b>2-o'rin:</b> VIP Forbes Jurnali Muqovasi + 50 Ball!\n"
-        "🥉 <b>3-o'rin:</b> Rasmiy VIP Parodiya Diplomlar to'plami + 30 Ball!\n\n"
+        "🥈 <b>2-o'rin:</b> VIP Forbes Jurnali Muqovasi + 10 Ball!\n"
+        "🥉 <b>3-o'rin:</b> Rasmiy VIP Parodiya Diplomlar to'plami + 5 Ball!\n\n"
         "📊 <b>Sizning ko'rsatkichlaringiz:</b>\n"
         f"👥 Taklif qilgan do'stlaringiz: <b>{invites} ta</b>\n"
         f"🏅 Joriy o'rningiz: <b>#{rank}</b>\n\n"
         "🔗 <b>Sizning shaxsiy taklif havolangiz:</b>\n"
         f"<code>{ref_link}</code>\n\n"
-        "💡 <i>Har bir taklif qilingan do'stingiz uchun sizga darhol <b>+10 ball</b> beriladi!</i>"
+        "💡 <i>Har bir taklif qilingan do'stingiz uchun sizga darhol <b>+1 ball</b> beriladi!</i>"
     )
     
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+10 Ball)", url=share_url)
+                InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+1 Ball)", url=share_url)
             ],
             [
                 InlineKeyboardButton(text="🏆 Top 10 Ishtirokchilar", callback_data="contest_top10"),
@@ -963,25 +960,10 @@ async def quiz_q3_handler(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await state.clear()
     
-    ans_list = [data.get("ans1", "boyvachcha"), data.get("ans2", "boyvachcha"), chosen_char]
-    final_char = max(set(ans_list), key=ans_list.count)
-    result_info = QUIZ_RESULTS.get(final_char, QUIZ_RESULTS["boyvachcha"])
-    
-    await database.add_user_points(call.from_user.id, 5, "Viktorina testi yakunlandi")
-    
-    share_text = (
-        f"🧠 Men 'Parodiya Tabrik Boti'da testdan o'tdim va natijam: {result_info['title']} {result_info['icon']} bo'lib chiqdi!\n\n"
-        "Sen kimsan? O'zingni tekshirib ko'r: 👇\n"
-        f"https://t.me/parodiya_tabrik_uzbot?start=ref_{call.from_user.id}"
-    )
-    encoded_share = urllib.parse.quote(share_text)
-    share_url = f"https://t.me/share/url?url={encoded_share}"
-    
     res_text = (
         "🎉 <b>TEST NATIJANGIZ TAYYOR!</b>\n\n"
         f"<b>{result_info['title']}</b> {result_info['icon']}\n\n"
-        f"📝 <i>{result_info['desc']}</i>\n\n"
-        "⭐️ <i>Sizga testni bajarganingiz uchun <b>+5 ball</b> berildi!</i>"
+        f"📝 <i>{result_info['desc']}</i>"
     )
     
     kb = InlineKeyboardMarkup(
@@ -1090,13 +1072,10 @@ async def cert_sender_entered(message: Message, state: FSMContext):
         text=cert_text
     )
     
-    await database.add_user_points(message.from_user.id, 2, "Sertifikat yaratildi")
-    
     res_display = (
         "🎉 <b>Rasmiy Parodiya Sertifikati Tayyor Bo'ldi!</b>\n\n"
         "📋 <i>Quyidagi sertifikat ustiga 1 marta bosib nusxa oling yoki pastdagi tugmalar orqali rasm/audio qilib yuklab oling:</i>\n\n"
-        f"<pre><code class=\"language-text\">{cert_text}</code></pre>\n\n"
-        "⭐️ <i>Sizga sertifikat yaratganingiz uchun <b>+2 ball</b> berildi!</i>"
+        f"<pre><code class=\"language-text\">{cert_text}</code></pre>"
     )
     
     await message.answer(res_display, parse_mode="HTML", reply_markup=get_result_keyboard(f"{recipient_name} uchun diplom!", cert_text, g_id, user_id=message.from_user.id))
@@ -1119,7 +1098,6 @@ async def roulette_spin_handler(event: TelegramObject):
     await asyncio.sleep(1.0)
     
     roulette_data = generate_random_roulette()
-    await database.add_user_points(event.from_user.id, 1, "Omad barabani aylantirildi")
     
     g_id = await database.save_greeting(
         user_id=event.from_user.id,
@@ -1134,8 +1112,7 @@ async def roulette_spin_handler(event: TelegramObject):
     res_text = (
         f"🎉 <b>DJЕКPOT! BARABAN TO'XTADI!</b> {roulette_data['icon']}\n\n"
         f"🎭 <b>Tasodifiy Personaj:</b> {roulette_data['character']}\n\n"
-        f"<pre><code class=\"language-text\">{roulette_data['text']}</code></pre>\n\n"
-        "⭐️ <i>Sizga omad barabani uchun <b>+1 ball</b> berildi!</i>"
+        f"<pre><code class=\"language-text\">{roulette_data['text']}</code></pre>"
     )
     
     await target_message.edit_text(res_text, parse_mode="HTML", reply_markup=get_result_keyboard("Omadli parodiya!", roulette_data['text'], g_id, user_id=event.from_user.id))
@@ -1152,9 +1129,9 @@ async def daily_fortune_handler(event: TelegramObject):
     
     if can_claim:
         await database.claim_daily_fortune(user.id)
-        bonus_notice = "⭐️ <b>Bugungi faollik uchun sizga +1 ball berildi! 🎁</b>\nErtaga yangi bashorat olish uchun yana kiring!"
+        bonus_notice = "🔮 <i>Ertaga yangi qiziqarli bashorat olish uchun yana kiring!</i>"
     else:
-        bonus_notice = "ℹ️ <i>Siz bugungi kunlik bashorat va ballingizni olgansiz. Yangi bashorat ertaga yangilanadi!</i>"
+        bonus_notice = "ℹ️ <i>Siz bugungi kunlik bashoratingizni olgansiz. Yangi bashorat ertaga yangilanadi!</i>"
         
     full_text = (
         "🔮 <b>Bugungi Kulgili Parodiya Bashoratingiz:</b>\n\n"
@@ -1228,7 +1205,7 @@ async def get_image_callback(call: CallbackQuery):
             post_kb = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
-                        InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+10 Ball)", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")
+                        InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+1 Ball)", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")
                     ],
                     [
                         InlineKeyboardButton(text="👥 Botni Guruhga Qo'shish", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true"),
@@ -1278,17 +1255,18 @@ async def start_magazine_intro(event: TelegramObject, state: FSMContext):
         "• 👑 <b>Maxsus unvon:</b> Saxiy boyvachcha, Qadrli do'st, Go'zal malika, Tezkor haydovchi va boshqalar;\n"
         "• 📰 <b>Shov-shuvli sarlavhalar</b>, shtrix-kod va oltin sifat muhri;\n"
         "• 📐 <b>1080x1440 HD sifat</b> (Instagram Story va Telegram profil uchun tayyor!);\n\n"
-        "💰 <b>Xizmat narxi:</b> Ixtiyoriy summa (kamida 1,000 so'm) yoki <b>25 ball</b> referral ballari!\n"
+        "💰 <b>Xizmat narxi:</b> Karta orqali ixtiyoriy summa (kamida 1,000 so'm) yoki <b>50 ball</b> referral ballari!\n"
         f"⭐️ Sizdagi ballar: <b>{pts} ball</b>\n\n"
+        "<i>💡 Maslahat: Karta orqali arzimagan 1,000 so'm to'lab ochish eng tez va qulay yo'l!</i>\n\n"
         "Davom etish uchun variantni tanlang:"
     )
     
     buttons = [
         [
-            InlineKeyboardButton(text="💎 25 Ball evaziga ochish", callback_data="mag_pay_pts")
+            InlineKeyboardButton(text="🧾 Karta orqali to'lash (Kamida 1,000 so'm)", callback_data="mag_pay_chk")
         ],
         [
-            InlineKeyboardButton(text="🧾 To'lov qilish (Kamida 1,000 so'm ixtiyoriy)", callback_data="mag_pay_chk")
+            InlineKeyboardButton(text="💎 50 Ball evaziga ochish (50 ta do'st)", callback_data="mag_pay_pts")
         ]
     ]
     if config.is_admin(user_id):
@@ -1317,15 +1295,15 @@ async def mag_pay_points_cb(call: CallbackQuery, state: FSMContext):
     profile = await database.get_user_profile(user_id)
     pts = profile.get("points", 0)
     
-    if pts < 25:
+    if pts < 50:
         await call.answer(
-            f"❌ Ballaringiz yetarli emas! Sizda {pts} ball bor (kamida 25 ball kerak).\nDo'stlaringizni taklif qiling (+10 ball) yoki ixtiyoriy summa (kamida 1,000 so'm) to'lang.",
+            f"❌ Ballaringiz yetarli emas! Sizda {pts} ball bor (kamida 50 ball kerak).\nTezroq ochish uchun kamida 1,000 so'm to'lov qiling yoki 50 ta do'st taklif qiling.",
             show_alert=True
         )
         return
         
-    await database.add_user_points(user_id, -25, "VIP Jurnal muqovasi xarid qilindi")
-    await call.answer("✅ 25 ball yechildi! Jurnal yaratish boshlandi.", show_alert=False)
+    await database.add_user_points(user_id, -50, "VIP Jurnal muqovasi xarid qilindi")
+    await call.answer("✅ 50 ball yechildi! Jurnal yaratish boshlandi.", show_alert=False)
     await start_magazine_form(call.message, state)
 
 @router.callback_query(F.data == "mag_pay_chk")
@@ -1689,7 +1667,7 @@ async def mag_title_chosen(call: CallbackQuery, state: FSMContext, bot: Bot):
             
             finish_kb = InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+10 Ball)", url=share_url)],
+                    [InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+1 Ball)", url=share_url)],
                     [InlineKeyboardButton(text="👥 Botni Guruhga Qo'shish", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true")],
                     [InlineKeyboardButton(text="🌟 Yana Boshqa Jurnal Yaratish", callback_data="start_magazine")],
                     [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
@@ -1770,7 +1748,7 @@ async def show_leaderboard_summary(event: TelegramObject):
             InlineKeyboardButton(text="🚀 Do'stimni Reytingga Qo'shish (+ O'rin)", callback_data="start_submit_leaderboard")
         ],
         [
-            InlineKeyboardButton(text="📲 Reytingni Do'stlarga Ulashish (+10 Ball)", url=f"https://t.me/share/url?url={ref_link}&text={share_promo}")
+            InlineKeyboardButton(text="📲 Reytingni Do'stlarga Ulashish (+1 Ball)", url=f"https://t.me/share/url?url={ref_link}&text={share_promo}")
         ]
     ]
     if config.is_admin(event.from_user.id):
@@ -2250,7 +2228,7 @@ async def send_generated_audio(bot: Bot, user_id: int, greeting_id_str: str, not
             audio_kb = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
-                        InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+10 Ball)", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")
+                        InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+1 Ball)", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")
                     ],
                     [
                         InlineKeyboardButton(text="👥 Botni Guruhga Qo'shish", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true"),
@@ -2452,8 +2430,7 @@ async def sender_entered_handler(message: Message, state: FSMContext):
     result_text = (
         "🎉 <b>Eksklyuziv Matn Tayyor Bo'ldi!</b>\n\n"
         "📋 <i>Quyidagi matnning burchagidagi <b>«Copy»</b> tugmasini bosib (yoki matn ustiga 1 marta bosib) nusxalab oling:</i>\n\n"
-        f"<pre><code class=\"language-text\">{generated_text}</code></pre>\n\n"
-        "⭐️ <i>Sizga tabrik yaratganingiz uchun <b>+2 ball</b> berildi!</i>"
+        f"<pre><code class=\"language-text\">{generated_text}</code></pre>"
     )
     
     share_caption = (
@@ -2515,11 +2492,11 @@ async def cmd_help(message: Message):
         "📖 <b>«Parodiya Tabrik Boti» Qo'llanmasi:</b>\n\n"
         "1️⃣ <b>Tabrik yaratish:</b> <b>«🎭 Tabrik Yaratish»</b> tugmasi orqali do'stingizga kulgili qutlov tayyorlang.\n"
         "2️⃣ <b>Rasm (Otkritka):</b> Matn ostidagi <b>«🖼 Rasm Olish»</b> orqali hashamatli oltin otkritkani yuklab oling.\n"
-        "3️⃣ <b>Ovozli Audio (MP3):</b> Tabrikni <b>«🎙 Audio Olish»</b> orqali tabiiy aktyor ovozida MP3 qilib oling (5,000 so'm yoki 25 ball).\n"
+        "3️⃣ <b>Ovozli Audio (MP3):</b> Tabrikni <b>«🎙 Audio Olish»</b> orqali tabiiy aktyor ovozida MP3 qilib oling.\n"
         "4️⃣ <b>Qaysi personajsan?</b> 3 ta savolli testdan o'tib, kimligingizni bilib oling va do'stlarga ulashing!\n"
         "5️⃣ <b>Parodiya Diplom:</b> Do'stingizga 'Yil Boyvachchasi' yoki 'Yil Taksisti' sertifikatini sovg'a qiling!\n"
         "6️⃣ <b>Omad Barabani:</b> Birgina bosishda tasodifiy kutilmagan parodiya oling!\n"
-        "7️⃣ <b>Ballar & Unvonlar:</b> Do'stlaringizni taklif qilib har biridan <b>+10 ball</b> oling va VIP unvonga ko'tariling!\n\n"
+        "7️⃣ <b>Ballar & Unvonlar:</b> Do'stlaringizni taklif qilib har biridan <b>+1 ball</b> oling va VIP unvonga ko'tariling!\n\n"
         "📌 <b>Mavjud buyruqlar:</b>\n"
         "• <code>/start</code> — Asosiy menyu\n"
         "• <code>/profile</code> — Sizning profilingiz va ballaringiz\n"

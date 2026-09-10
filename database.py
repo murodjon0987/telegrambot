@@ -178,20 +178,19 @@ def _upsert_user_sync(user_id: int, username: Optional[str], first_name: str, la
             
             cursor.execute("""
                 INSERT INTO users (user_id, username, first_name, last_name, created_at, last_active, greetings_count, is_banned, referrer_id, utm_source, points)
-                VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 5)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 0)
             """, (user_id, username, first_name, last_name, now_str, now_str, actual_ref, utm_source))
             
-            # Yangi foydalanuvchiga boshlang'ich +5 ball bonus!
+            # Yangi foydalanuvchi taklif qilganda referrerga +1 ball beriladi
             if actual_ref > 0:
                 cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (actual_ref,))
                 ref_exists = cursor.fetchone()
                 if ref_exists:
-                    # Referrerga +10 ball beriladi!
-                    cursor.execute("UPDATE users SET points = points + 10 WHERE user_id = ?", (actual_ref,))
+                    cursor.execute("UPDATE users SET points = points + 1 WHERE user_id = ?", (actual_ref,))
                     cursor.execute("""
                         INSERT INTO activity_logs (user_id, username, full_name, action, details, created_at)
                         VALUES (?, '', 'Referral System', 'REF_BONUS', ?, ?)
-                    """, (actual_ref, f"Do'st taklif qildi (+10 ball, yangi foydalanuvchi: {user_id})", now_str))
+                    """, (actual_ref, f"Do'st taklif qildi (+1 ball, yangi foydalanuvchi: {user_id})", now_str))
                     bonus_referrer_id = actual_ref
 
             conn.commit()
@@ -234,19 +233,19 @@ def _get_user_profile_sync(user_id: int) -> Dict[str, Any]:
 
         points = user_dict.get("points", 0)
         
-        # Daraja / Unvon hisoblash
-        if points < 20:
+        # Daraja / Unvon hisoblash (Tegishli me'yorlar)
+        if points < 5:
             rank_title = "🥉 Oddiy Mehmon"
             next_rank = "🥈 Mahalla Faoli"
-            needed = 20 - points
-        elif points < 50:
+            needed = 5 - points
+        elif points < 15:
             rank_title = "🥈 Mahalla Faoli"
             next_rank = "🥇 Saxiy Homiy"
-            needed = 50 - points
-        elif points < 100:
+            needed = 15 - points
+        elif points < 30:
             rank_title = "🥇 Saxiy Homiy"
             next_rank = "👑 Toshkent Avtoriteti (VIP)"
-            needed = 100 - points
+            needed = 30 - points
         else:
             rank_title = "👑 Toshkent Avtoriteti (VIP)"
             next_rank = "🏆 Maksimal Daraja!"
@@ -303,9 +302,9 @@ def _claim_daily_fortune_sync(user_id: int):
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO activity_logs (user_id, username, full_name, action, details, created_at)
-            VALUES (?, '', 'Kunlik Bashorat', ?, 'Bugungi kunlik bashorat olindi (+1 ball)', ?)
+            VALUES (?, '', 'Kunlik Bashorat', ?, 'Bugungi kunlik bashorat olindi', ?)
         """, (user_id, action_key, now_str))
-        cursor.execute("UPDATE users SET points = points + 1, last_active = ? WHERE user_id = ?", (now_str, user_id))
+        cursor.execute("UPDATE users SET last_active = ? WHERE user_id = ?", (now_str, user_id))
         conn.commit()
 
 async def claim_daily_fortune(user_id: int):
@@ -365,7 +364,7 @@ def _save_greeting_sync(user_id: int, category: str, character: str, recipient_n
         
         # Tabrik yaratganda +2 ball beriladi!
         cursor.execute("""
-            UPDATE users SET greetings_count = greetings_count + 1, points = points + 2, last_active = ? WHERE user_id = ?
+            UPDATE users SET greetings_count = greetings_count + 1, last_active = ? WHERE user_id = ?
         """, (now_str, user_id))
         conn.commit()
         return greeting_id
