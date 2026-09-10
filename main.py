@@ -9,6 +9,7 @@ import urllib.parse
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
+import aiohttp  # pyrefly: ignore [missing-import] # type: ignore
 from aiohttp import web  # pyrefly: ignore [missing-import] # type: ignore
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware  # pyrefly: ignore [missing-import] # type: ignore
 from aiogram.filters import Command, CommandStart  # pyrefly: ignore [missing-import] # type: ignore
@@ -3039,6 +3040,23 @@ async def auto_backup_loop(bot: Bot):
         except Exception as e:
             logger.warning(f"Avtomatik backupda xatolik: {e}")
 
+async def anti_sleep_loop():
+    """Render.com bepul serveri uxlab qolmasligi uchun har 10 daqiqada o'zining public URL siga so'rov yuboradi."""
+    public_url = os.getenv("RENDER_EXTERNAL_URL", "https://telegrambot-wtzt.onrender.com/health")
+    if not public_url.endswith("/health"):
+        public_url = public_url.rstrip("/") + "/health"
+        
+    await asyncio.sleep(60)
+    while True:
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+                async with session.get(public_url) as resp:
+                    if resp.status == 200:
+                        logger.info(f"⏰ Anti-Sleep ping muvaffaqiyatli: {public_url}")
+        except Exception as e:
+            logger.debug(f"Anti-Sleep ping eslatmasi: {e}")
+        await asyncio.sleep(600)
+
 # -------------------------------------------------------------
 # 19. ASOSIY ENTRYPOINT (MAIN SIKL)
 # -------------------------------------------------------------
@@ -3089,11 +3107,13 @@ async def main():
     logger.info(f"👑 Boshqaruvchi Admin ID: {config.ADMIN_ID}")
 
     backup_task = asyncio.create_task(auto_backup_loop(bot))
+    anti_sleep_task = asyncio.create_task(anti_sleep_loop())
 
     try:
         await run_bot_polling_watchdog(bot, dp)
     finally:
         backup_task.cancel()
+        anti_sleep_task.cancel()
         logger.info("🧹 Resurslarni tozalash va yopish...")
         await runner.cleanup()
         await bot.session.close()
