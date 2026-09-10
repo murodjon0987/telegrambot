@@ -276,9 +276,13 @@ def get_main_menu_keyboard(user_id: int = 0):
         buttons.append([InlineKeyboardButton(text="👑 Admin Boshqaruv Paneli", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_admin_keyboard():
+def get_admin_keyboard(pending_count: int = 0):
+    badge = f" (⏳ {pending_count} ta kutilmoqda!)" if pending_count > 0 else ""
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(text=f"💳 To'lovlar & Cheklar Markazi{badge}", callback_data="admin_payments")
+            ],
             [
                 InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats"),
                 InlineKeyboardButton(text="🏆 Reytinglar", callback_data="admin_rankings")
@@ -1064,27 +1068,40 @@ async def mag_pay_check_cb(call: CallbackQuery, state: FSMContext):
 async def mag_check_received(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     
+    file_id = message.photo[-1].file_id if message.photo else message.document.file_id
+    file_type = "photo" if message.photo else "document"
+    
+    # 1. Chekni ma'lumotlar bazasiga xavfsiz saqlaymiz (hech narsa yo'qolmaydi!)
+    receipt_id = await database.save_payment_receipt(
+        user_id=message.from_user.id,
+        full_name=message.from_user.full_name,
+        username=message.from_user.username,
+        file_id=file_id,
+        file_type=file_type,
+        amount=5000
+    )
+    
     admin_caption = (
-        "🧾 <b>Yangi VIP Jurnal Muqovasi To'lov Cheki (5,000 so'm)!</b>\n\n"
+        f"🧾 <b>Yangi VIP Jurnal To'lov Cheki #{receipt_id} (5,000 so'm)!</b>\n\n"
         f"👤 Foydalanuvchi: <b>{html.escape(message.from_user.full_name)}</b>\n"
         f"🆔 ID: <code>{message.from_user.id}</code>\n"
-        f"🔗 Username: @{message.from_user.username or 'mavjud_emas'}\n\n"
+        f"🔗 Username: @{message.from_user.username or 'mavjud_emas'}\n"
+        f"📅 Vaqti: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         "To'lovni tasdiqlaysizmi?"
     )
     admin_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ Tasdiqlash va Jurnalni Ochish", callback_data=f"adm_mag_app_{message.from_user.id}"),
-                InlineKeyboardButton(text="❌ Rad etish", callback_data=f"adm_mag_rej_{message.from_user.id}")
+                InlineKeyboardButton(text="✅ Tasdiqlash va Jurnalni Ochish", callback_data=f"adm_mag_app_{receipt_id}"),
+                InlineKeyboardButton(text="❌ Rad etish", callback_data=f"adm_mag_rej_{receipt_id}")
             ]
         ]
     )
     try:
         if message.photo:
-            photo = message.photo[-1]
             await bot.send_photo(
                 chat_id=config.ADMIN_ID,
-                photo=photo.file_id,
+                photo=file_id,
                 caption=admin_caption,
                 parse_mode="HTML",
                 reply_markup=admin_kb
@@ -1092,12 +1109,16 @@ async def mag_check_received(message: Message, state: FSMContext, bot: Bot):
         elif message.document:
             await bot.send_document(
                 chat_id=config.ADMIN_ID,
-                document=message.document.file_id,
+                document=file_id,
                 caption=admin_caption,
                 parse_mode="HTML",
                 reply_markup=admin_kb
             )
-        await message.answer("✅ <b>Chekingiz qabul qilindi!</b>\nAdministrator tekshirib tasdiqlashi bilan jurnal muqovasi yaratish ochiladi.", parse_mode="HTML")
+        await message.answer(
+            f"✅ <b>Chekingiz qabul qilindi (Chek #{receipt_id})!</b>\n"
+            "Administrator tekshirib tasdiqlashi bilan jurnal muqovasi yaratish ochiladi.",
+            parse_mode="HTML"
+        )
     except Exception as e:
         logger.error(f"Adminga chek yuborishda xatolik: {e}", exc_info=True)
         await message.answer(f"⚠️ Chekni adminga jo'natishda xatolik yuz berdi: {e}")
@@ -1115,14 +1136,28 @@ async def adm_mag_app_cb(call: CallbackQuery, bot: Bot):
     if not config.is_admin(call.from_user.id):
         await call.answer("❌ Ruxsat yo'q!", show_alert=True)
         return
-    user_id = int(call.data.replace("adm_mag_app_", ""))
-    await call.answer("✅ Tasdiqlandi!", show_alert=True)
+        
+    id_param = int(call.data.replace("adm_mag_app_", ""))
+    receipt = await database.update_receipt_status(id_param, "approved")
+    target_user_id = receipt["user_id"] if receipt else id_param
+    
+    await call.answer("✅ Chek tasdiqlandi!", show_alert=True)
+    
+    after_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⏳ Keyingi Kutilayotgan Chek", callback_data="adm_view_pending_0"),
+                InlineKeyboardButton(text="💳 To'lovlar Markazi", callback_data="admin_payments")
+            ]
+        ]
+    )
     
     try:
-        if call.message.photo:
-            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ <b>ADMIN TASDIQLADI! FOYDALANUVCHIGA RUXSAT BERILDI.</b>", parse_mode="HTML")
-        else:
-            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ <b>ADMIN TASDIQLADI! FOYDALANUVCHIGA RUXSAT BERILDI.</b>", parse_mode="HTML")
+        await call.message.edit_caption(
+            caption=(call.message.caption or "") + f"\n\n✅ <b>ADMIN TASDIQLADI! (Chek #{id_param})</b>",
+            parse_mode="HTML",
+            reply_markup=after_kb
+        )
     except Exception:
         pass
     
@@ -1131,8 +1166,8 @@ async def adm_mag_app_cb(call: CallbackQuery, bot: Bot):
     )
     try:
         await bot.send_message(
-            chat_id=user_id,
-            text="🎉 <b>Tabriklaymiz! To'lovingiz muvaffaqiyatli tasdiqlandi!</b>\n\nEndi VIP Jurnal muqovasini yaratish uchun quyidagi tugmani bosing:",
+            chat_id=target_user_id,
+            text=f"🎉 <b>Tabriklaymiz! To'lovingiz (Chek #{id_param}) muvaffaqiyatli tasdiqlandi!</b>\n\nEndi VIP Jurnal muqovasini yaratish uchun quyidagi tugmani bosing:",
             parse_mode="HTML",
             reply_markup=kb
         )
@@ -1144,16 +1179,34 @@ async def adm_mag_rej_cb(call: CallbackQuery, bot: Bot):
     if not config.is_admin(call.from_user.id):
         await call.answer("❌ Ruxsat yo'q!", show_alert=True)
         return
-    user_id = int(call.data.replace("adm_mag_rej_", ""))
-    await call.answer("❌ Rad etildi.", show_alert=True)
+        
+    id_param = int(call.data.replace("adm_mag_rej_", ""))
+    receipt = await database.update_receipt_status(id_param, "rejected")
+    target_user_id = receipt["user_id"] if receipt else id_param
+    
+    await call.answer("❌ Chek rad etildi.", show_alert=True)
+    
+    after_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⏳ Keyingi Kutilayotgan Chek", callback_data="adm_view_pending_0"),
+                InlineKeyboardButton(text="💳 To'lovlar Markazi", callback_data="admin_payments")
+            ]
+        ]
+    )
+    
     try:
-        await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n❌ <b>TO'LOV RAD ETILDI!</b>", parse_mode="HTML")
+        await call.message.edit_caption(
+            caption=(call.message.caption or "") + f"\n\n❌ <b>TO'LOV RAD ETILDI! (Chek #{id_param})</b>",
+            parse_mode="HTML",
+            reply_markup=after_kb
+        )
     except Exception:
         pass
     try:
         await bot.send_message(
-            chat_id=user_id,
-            text="❌ <b>Kechirasiz, yuborgan to'lov chekingiz tasdiqlanmadi.</b>\nIltimos, haqiqiy to'lov skrinshotini yuboring yoki adminga murojaat qiling.",
+            chat_id=target_user_id,
+            text=f"❌ <b>Kechirasiz, yuborgan to'lov chekingiz (Chek #{id_param}) tasdiqlanmadi.</b>\nIltimos, haqiqiy to'lov skrinshotini yuboring yoki adminga murojaat qiling.",
             parse_mode="HTML"
         )
     except Exception:
@@ -1832,17 +1885,20 @@ async def cmd_admin(message: Message, state: FSMContext):
     
     await state.clear()
     stats = await database.get_statistics()
+    pay_stats = await database.get_payment_stats()
+    
     text = (
         "👑 <b>Admin Boshqaruv Paneliga Xush Kelibsiz!</b>\n\n"
         f"🆔 <b>Admin ID:</b> <code>{message.from_user.id}</code>\n"
         f"👥 <b>Jami foydalanuvchilar:</b> {stats['total_users']} ta\n"
         f"🎁 <b>Yaratilgan tabriklar:</b> {stats['total_greetings']} ta\n"
+        f"💳 <b>Kutilayotgan cheklar:</b> <b>{pay_stats['pending']} ta</b>\n"
+        f"💰 <b>Jami to'lovlar tushumi:</b> <b>{pay_stats['total_revenue']:,} so'm</b>\n"
         f"⭐️ <b>Tarqatilgan jami ballar:</b> {stats.get('total_points', 0)} ball\n"
-        f"📜 <b>Qayd etilgan harakatlar:</b> {stats['total_logs']} ta\n"
         f"⛔ <b>Bloklanganlar:</b> {stats['banned_users']} ta\n\n"
         "Quyidagi bo'limlardan birini tanlang:"
     )
-    await message.answer(text, parse_mode="HTML", reply_markup=get_admin_keyboard())
+    await message.answer(text, parse_mode="HTML", reply_markup=get_admin_keyboard(pay_stats['pending']))
 
 @router.message(Command("backup"))
 async def cmd_backup(message: Message, bot: Bot):
@@ -1881,17 +1937,168 @@ async def admin_panel_callback(call: CallbackQuery, state: FSMContext):
     
     await state.clear()
     stats = await database.get_statistics()
+    pay_stats = await database.get_payment_stats()
+    
     text = (
         "👑 <b>Admin Boshqaruv Paneli</b>\n\n"
         f"🆔 <b>Admin ID:</b> <code>{call.from_user.id}</code>\n"
         f"👥 <b>Jami foydalanuvchilar:</b> {stats['total_users']} ta\n"
         f"🎁 <b>Yaratilgan tabriklar:</b> {stats['total_greetings']} ta\n"
+        f"💳 <b>Kutilayotgan cheklar:</b> <b>{pay_stats['pending']} ta</b>\n"
+        f"💰 <b>Jami to'lovlar tushumi:</b> <b>{pay_stats['total_revenue']:,} so'm</b>\n"
         f"⭐️ <b>Tarqatilgan jami ballar:</b> {stats.get('total_points', 0)} ball\n"
-        f"📜 <b>Qayd etilgan harakatlar:</b> {stats['total_logs']} ta\n"
         f"⛔ <b>Bloklanganlar:</b> {stats['banned_users']} ta\n\n"
         "Quyidagi bo'limlardan birini tanlang:"
     )
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_admin_keyboard())
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_admin_keyboard(pay_stats['pending']))
+    await call.answer()
+
+# -------------------------------------------------------------
+# TO'LOVLAR VA CHEKLAR BOSHQARUV MARKAZI
+# -------------------------------------------------------------
+@router.callback_query(F.data == "admin_payments")
+async def admin_payments_dashboard(call: CallbackQuery):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+        
+    stats = await database.get_payment_stats()
+    
+    text = (
+        "💳 <b>To'lovlar va Cheklar Boshqaruv Markazi</b>\n\n"
+        f"⏳ <b>Kutilayotgan (tasdiqlanmagan) cheklar:</b> <b>{stats['pending']} ta</b>\n"
+        f"✅ <b>Tasdiqlangan to'lovlar:</b> <b>{stats['approved']} ta</b>\n"
+        f"❌ <b>Rad etilgan cheklar:</b> <b>{stats['rejected']} ta</b>\n"
+        f"📊 <b>Jami kelgan cheklar:</b> <b>{stats['total']} ta</b>\n\n"
+        f"💰 <b>Jami tushum (Kassada):</b> <b>{stats['total_revenue']:,} so'm</b>\n\n"
+        "<i>Kerakli bo'limni tanlang:</i>"
+    )
+    
+    buttons = []
+    if stats["pending"] > 0:
+        buttons.append([
+            InlineKeyboardButton(text=f"⏳ Kutilayotgan Cheklarni Ko'rish ({stats['pending']} ta)", callback_data="adm_view_pending_0")
+        ])
+    else:
+        buttons.append([
+            InlineKeyboardButton(text="✅ Kutilayotgan Cheklar Yo'q (Barchasi ko'rilgan)", callback_data="adm_no_pending")
+        ])
+        
+    buttons.append([
+        InlineKeyboardButton(text="📜 Barcha To'lovlar Tarixi (Oxirgi 15 ta)", callback_data="adm_all_receipts_0")
+    ])
+    buttons.append([
+        InlineKeyboardButton(text="🔄 Yangilash", callback_data="admin_payments"),
+        InlineKeyboardButton(text="🔙 Admin Panel", callback_data="admin_panel")
+    ])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data == "adm_no_pending")
+async def adm_no_pending_cb(call: CallbackQuery):
+    await call.answer("🎉 Hozircha kutilayotgan yangi cheklar yo'q! Barchasi ko'rib chiqilgan.", show_alert=True)
+
+@router.callback_query(F.data.startswith("adm_view_pending_"))
+async def adm_view_pending_cb(call: CallbackQuery, bot: Bot):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+        
+    offset_str = call.data.replace("adm_view_pending_", "")
+    offset = int(offset_str) if offset_str.isdigit() else 0
+    
+    pending_list = await database.get_pending_receipts(limit=1, offset=offset)
+    stats = await database.get_payment_stats()
+    
+    if not pending_list:
+        await call.answer("Boshqa kutilayotgan chek qolmadi!", show_alert=True)
+        await admin_payments_dashboard(call)
+        return
+        
+    receipt = pending_list[0]
+    total_pending = stats["pending"]
+    current_num = offset + 1
+    
+    caption = (
+        f"🧾 <b>Kutilayotgan Chek #{receipt['id']}</b> ({current_num}/{total_pending})\n\n"
+        f"👤 <b>Foydalanuvchi:</b> {html.escape(receipt['full_name'])}\n"
+        f"🆔 <b>Telegram ID:</b> <code>{receipt['user_id']}</code>\n"
+        f"🔗 <b>Username:</b> @{receipt['username'] or 'mavjud_emas'}\n"
+        f"💵 <b>Summa:</b> {receipt['amount']:,} so'm\n"
+        f"📅 <b>Kelgan vaqti:</b> {receipt['created_at']}\n\n"
+        "To'lovni tasdiqlaysizmi?"
+    )
+    
+    nav_buttons = [
+        [
+            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"adm_mag_app_{receipt['id']}"),
+            InlineKeyboardButton(text="❌ Rad etish", callback_data=f"adm_mag_rej_{receipt['id']}")
+        ]
+    ]
+    
+    row_nav = []
+    if offset > 0:
+        row_nav.append(InlineKeyboardButton(text="⬅️ Oldingisi", callback_data=f"adm_view_pending_{offset - 1}"))
+    if current_num < total_pending:
+        row_nav.append(InlineKeyboardButton(text="Keyingisi ➡️", callback_data=f"adm_view_pending_{offset + 1}"))
+    if row_nav:
+        nav_buttons.append(row_nav)
+        
+    nav_buttons.append([InlineKeyboardButton(text="🔙 To'lovlar Menyusi", callback_data="admin_payments")])
+    kb = InlineKeyboardMarkup(inline_keyboard=nav_buttons)
+    
+    await call.answer()
+    try:
+        if receipt["file_type"] == "photo":
+            await bot.send_photo(
+                chat_id=call.from_user.id,
+                photo=receipt["file_id"],
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+        else:
+            await bot.send_document(
+                chat_id=call.from_user.id,
+                document=receipt["file_id"],
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+    except Exception as e:
+        logger.error(f"Chekni ko'rsatishda xatolik: {e}")
+        await call.message.answer(f"⚠️ Chekni yuklashda xatolik: {e}", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("adm_all_receipts_"))
+async def adm_all_receipts_cb(call: CallbackQuery):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+        
+    receipts = await database.get_all_receipts(limit=15)
+    
+    text = "📜 <b>Oxirgi 15 ta To'lov Cheki Tarixi:</b>\n\n"
+    if not receipts:
+        text += "<i>Hozircha hech qanday chek kelmagan.</i>"
+    else:
+        for r in receipts:
+            status_icon = "⏳" if r["status"] == "pending" else ("✅" if r["status"] == "approved" else "❌")
+            status_word = "Kutilmoqda" if r["status"] == "pending" else ("Tasdiqlangan" if r["status"] == "approved" else "Rad etilgan")
+            text += (
+                f"{status_icon} <b>Chek #{r['id']}</b> ({r['amount']:,} so'm)\n"
+                f"👤 {html.escape(r['full_name'])} (@{r['username'] or 'yoq'})\n"
+                f"📅 {r['created_at']} — <i>{status_word}</i>\n\n"
+            )
+            
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Yangilash", callback_data="adm_all_receipts_0")],
+            [InlineKeyboardButton(text="🔙 To'lovlar Menyusi", callback_data="admin_payments")]
+        ]
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     await call.answer()
 
 @router.callback_query(F.data == "admin_stats")

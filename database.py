@@ -76,6 +76,22 @@ def _init_db_sync():
             )
         """)
         
+        # 4. To'lov cheklari va hisobotlari jadvali
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS payment_receipts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                full_name TEXT,
+                username TEXT,
+                file_id TEXT NOT NULL,
+                file_type TEXT DEFAULT 'photo',
+                amount INTEGER DEFAULT 5000,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                processed_at TEXT
+            )
+        """)
+        
         # Indekslar (Tezkor qidiruv uchun)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_is_banned ON users(is_banned);")
@@ -84,6 +100,8 @@ def _init_db_sync():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_created_at ON activity_logs(created_at);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_user_id ON activity_logs(user_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_greetings_user ON greetings(user_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_receipts_status ON payment_receipts(status);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_receipts_user ON payment_receipts(user_id);")
         conn.commit()
 
 async def init_db():
@@ -558,3 +576,105 @@ def _export_users_csv_sync(filepath: str) -> str:
 async def export_users_csv(filepath: str) -> str:
     """Foydalanuvchilar ro'yxatini CSV fayl qilib eksport qilish."""
     return await asyncio.to_thread(_export_users_csv_sync, filepath)
+
+# -------------------------------------------------------------
+# TO'LOV CHEKLARI VA HISOBOTLAR (ADMIN TO'LOVLAR BOSHQARUVI)
+# -------------------------------------------------------------
+def _save_payment_receipt_sync(user_id: int, full_name: str, username: Optional[str], file_id: str, file_type: str = "photo", amount: int = 5000) -> int:
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO payment_receipts (user_id, full_name, username, file_id, file_type, amount, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+        """, (user_id, full_name, username or "", file_id, file_type, amount, now_str))
+        conn.commit()
+        return cursor.lastrowid or 0
+
+async def save_payment_receipt(user_id: int, full_name: str, username: Optional[str], file_id: str, file_type: str = "photo", amount: int = 5000) -> int:
+    """Yangi tushgan to'lov chekini bazada xavfsiz saqlash."""
+    return await asyncio.to_thread(_save_payment_receipt_sync, user_id, full_name, username, file_id, file_type, amount)
+
+def _get_receipt_by_id_sync(receipt_id: int) -> Optional[Dict[str, Any]]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM payment_receipts WHERE id = ?", (receipt_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+async def get_receipt_by_id(receipt_id: int) -> Optional[Dict[str, Any]]:
+    """Chek ma'lumotlarini ID bo'yicha olish."""
+    return await asyncio.to_thread(_get_receipt_by_id_sync, receipt_id)
+
+def _update_receipt_status_sync(receipt_id: int, status: str) -> Optional[Dict[str, Any]]:
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE payment_receipts
+            SET status = ?, processed_at = ?
+            WHERE id = ?
+        """, (status, now_str, receipt_id))
+        conn.commit()
+        cursor.execute("SELECT * FROM payment_receipts WHERE id = ?", (receipt_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+async def update_receipt_status(receipt_id: int, status: str) -> Optional[Dict[str, Any]]:
+    """Chek holatini 'approved' yoki 'rejected' ga o'zgartirish."""
+    return await asyncio.to_thread(_update_receipt_status_sync, receipt_id, status)
+
+def _get_pending_receipts_sync(limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM payment_receipts
+            WHERE status = 'pending'
+            ORDER BY id ASC
+            LIMIT ? OFFSET ?
+        """, (limit, offset))
+        return [dict(r) for r in cursor.fetchall()]
+
+async def get_pending_receipts(limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
+    """Kutilayotgan (tasdiqlanmagan) barcha cheklar ro'yxati."""
+    return await asyncio.to_thread(_get_pending_receipts_sync, limit, offset)
+
+def _get_all_receipts_sync(limit: int = 15, offset: int = 0) -> List[Dict[str, Any]]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM payment_receipts
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+        """, (limit, offset))
+        return [dict(r) for r in cursor.fetchall()]
+
+async def get_all_receipts(limit: int = 15, offset: int = 0) -> List[Dict[str, Any]]:
+    """Barcha to'lovlar tarixi."""
+    return await asyncio.to_thread(_get_all_receipts_sync, limit, offset)
+
+def _get_payment_stats_sync() -> Dict[str, Any]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM payment_receipts WHERE status = 'pending'")
+        pending = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM payment_receipts WHERE status = 'approved'")
+        app_row = cursor.fetchone()
+        approved = app_row[0]
+        total_revenue = app_row[1]
+        
+        cursor.execute("SELECT COUNT(*) FROM payment_receipts WHERE status = 'rejected'")
+        rejected = cursor.fetchone()[0]
+        
+        return {
+            "pending": pending,
+            "approved": approved,
+            "rejected": rejected,
+            "total_revenue": total_revenue,
+            "total": pending + approved + rejected
+        }
+
+async def get_payment_stats() -> Dict[str, Any]:
+    """To'lovlar bo'yicha to'liq statistika."""
+    return await asyncio.to_thread(_get_payment_stats_sync)
