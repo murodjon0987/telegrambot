@@ -678,3 +678,69 @@ def generate_random_roulette() -> dict:
         "icon": char_info.get("icon", "🎰"),
         "text": text
     }
+
+# -------------------------------------------------------------
+# 15. VIP JURNAL MUQOVASI UNVONLARI (FORBES / VIP UZBEKISTAN)
+# -------------------------------------------------------------
+MAGAZINE_TITLES = {
+    "boyvachcha": {
+        "title": "Yilning Eng Saxiy Boyvachchasi",
+        "subtitle": "«O'zbekistonning 2026-yildagi eng saxiy va boy insoni»",
+        "icon": "👑",
+        "t1_cat": "SENSIYA",
+        "t1_sub": "1 oyda qanday qilib\nToshkent boyvachchasiga\naylanish siri!",
+        "t2_cat": "EXCLUSIVE",
+        "t2_sub": "Choyxona hisobini doim\nyopadigan yagona inson!",
+        "badge": "100% ISHONCHLI"
+    },
+    "vip_dost": {
+        "title": "Poytaxtning Eng Qadrli Do'sti",
+        "subtitle": "«Do'stlarining faxri, mahallaning chinakam g'ururi»",
+        "icon": "🏆",
+        "t1_cat": "DO'STLIK",
+        "t1_sub": "Har qanday vaziyatda\nyordamga tayyor turgan\nsadoqatli inson!",
+        "t2_cat": "REKORD",
+        "t2_sub": "Do'stlari orasida 100%\nhurmatga sazovor inson!",
+        "badge": "VIP DO'ST"
+    },
+    "malika": {
+        "title": "Yilning Eng Go'zal va Oqila Malikasi",
+        "subtitle": "«Nafosat va go'zallik bo'yicha mutlaq g'olib»",
+        "icon": "👸",
+        "t1_cat": "GO'ZALLIK",
+        "t1_sub": "Birgina tabassumi bilan\ndunyoni yorituvchi\nyil sohibasi!",
+        "t2_cat": "INSPIRATSIYA",
+        "t2_sub": "Yuraklarni zabt etgan\neng samimiy qalb egasi!",
+        "badge": "N1 MALIKA"
+    },
+    "biznesmen": {
+        "title": "Kelajak Milliarderi va Top Biznesmen",
+        "subtitle": "«Katta maqsadlar va ulkan loyihalar yetakchisi»",
+        "icon": "💼",
+        "t1_cat": "STARTUP",
+        "t1_sub": "Har qanday g'oyani\ndollarga aylantiradigan\nchaqqon daho!",
+        "t2_cat": "INVESTOR",
+        "t2_sub": "Bozor qoidalarini\no'zi belgilaydigan lider!",
+        "badge": "BO'LAJAK MILLIARDER"
+    },
+    "talaba": {
+        "title": "Sessiyadan Omon Qolgan Yil Talabasi",
+        "subtitle": "«Doshirak va kofe kuchi bilan barcha imtihonlarni yopgan daho»",
+        "icon": "🎓",
+        "t1_cat": "TALABALIK",
+        "t1_sub": "1 kechada 500 betlik\nkonspektni yodlagan\nafsungar talaba!",
+        "t2_cat": "STIPENDIYA",
+        "t2_sub": "Qizil diplom sari\ncharchamay intilayotgan yosh!",
+        "badge": "TOP TALABA"
+    },
+    "haydovchi": {
+        "title": "Poytaxtning Eng Tezkor Haydovchisi",
+        "subtitle": "«Propkalarni aylanib o'tish bo'yicha Toshkent chempioni»",
+        "icon": "🏎",
+        "t1_cat": "TEZLIK",
+        "t1_sub": "Chilonzordan Yunusobodga\n10 daqiqada yetib borish\nrekordi egasi!",
+        "t2_cat": "MAHORAT",
+        "t2_sub": "Kameraga tushmaslik\nsirlarini biluvchi usta!",
+        "badge": "PROFFI HAYDOVCHI"
+    }
+}
