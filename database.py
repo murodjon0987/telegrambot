@@ -580,7 +580,7 @@ async def export_users_csv(filepath: str) -> str:
 # -------------------------------------------------------------
 # TO'LOV CHEKLARI VA HISOBOTLAR (ADMIN TO'LOVLAR BOSHQARUVI)
 # -------------------------------------------------------------
-def _save_payment_receipt_sync(user_id: int, full_name: str, username: Optional[str], file_id: str, file_type: str = "photo", amount: int = 5000) -> int:
+def _save_payment_receipt_sync(user_id: int, full_name: str, username: Optional[str], file_id: str, file_type: str = "photo", amount: int = 1000) -> int:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with _get_connection() as conn:
         cursor = conn.cursor()
@@ -591,7 +591,7 @@ def _save_payment_receipt_sync(user_id: int, full_name: str, username: Optional[
         conn.commit()
         return cursor.lastrowid or 0
 
-async def save_payment_receipt(user_id: int, full_name: str, username: Optional[str], file_id: str, file_type: str = "photo", amount: int = 5000) -> int:
+async def save_payment_receipt(user_id: int, full_name: str, username: Optional[str], file_id: str, file_type: str = "photo", amount: int = 1000) -> int:
     """Yangi tushgan to'lov chekini bazada xavfsiz saqlash."""
     return await asyncio.to_thread(_save_payment_receipt_sync, user_id, full_name, username, file_id, file_type, amount)
 

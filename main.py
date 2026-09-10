@@ -999,7 +999,7 @@ async def start_magazine_intro(event: TelegramObject, state: FSMContext):
         "• 👑 <b>Maxsus unvon:</b> Saxiy boyvachcha, Qadrli do'st, Go'zal malika, Tezkor haydovchi va boshqalar;\n"
         "• 📰 <b>Shov-shuvli sarlavhalar</b>, shtrix-kod va oltin sifat muhri;\n"
         "• 📐 <b>1080x1440 HD sifat</b> (Instagram Story va Telegram profil uchun tayyor!);\n\n"
-        "💰 <b>Narxi:</b> 5,000 so'm yoki <b>25 ball</b> referral ballari!\n"
+        "💰 <b>Xizmat narxi:</b> Ixtiyoriy summa (kamida 1,000 so'm) yoki <b>25 ball</b> referral ballari!\n"
         f"⭐️ Sizdagi ballar: <b>{pts} ball</b>\n\n"
         "Davom etish uchun variantni tanlang:"
     )
@@ -1009,7 +1009,7 @@ async def start_magazine_intro(event: TelegramObject, state: FSMContext):
             InlineKeyboardButton(text="💎 25 Ball evaziga ochish", callback_data="mag_pay_pts")
         ],
         [
-            InlineKeyboardButton(text="🧾 5,000 so'm (Click / Payme)", callback_data="mag_pay_chk")
+            InlineKeyboardButton(text="🧾 To'lov qilish (Kamida 1,000 so'm ixtiyoriy)", callback_data="mag_pay_chk")
         ]
     ]
     if config.is_admin(user_id):
@@ -1040,7 +1040,7 @@ async def mag_pay_points_cb(call: CallbackQuery, state: FSMContext):
     
     if pts < 25:
         await call.answer(
-            f"❌ Ballaringiz yetarli emas! Sizda {pts} ball bor (kamida 25 ball kerak).\nDo'stlaringizni taklif qiling (+10 ball) yoki 5,000 so'm to'lang.",
+            f"❌ Ballaringiz yetarli emas! Sizda {pts} ball bor (kamida 25 ball kerak).\nDo'stlaringizni taklif qiling (+10 ball) yoki ixtiyoriy summa (kamida 1,000 so'm) to'lang.",
             show_alert=True
         )
         return
@@ -1052,10 +1052,10 @@ async def mag_pay_points_cb(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "mag_pay_chk")
 async def mag_pay_check_cb(call: CallbackQuery, state: FSMContext):
     await state.set_state(MagazinePaymentForm.uploading_check)
-    card_number = getattr(config, "PAYMENT_CARD", "4916990340933958")
+    card_number = getattr(config, "PAYMENT_CARD", "4067070008610359")
     text = (
         "🧾 <b>VIP Jurnal Muqovasi Uchun To'lov</b>\n\n"
-        "1. Quyidagi karta raqamiga <b>5,000 so'm</b> o'tkazing:\n"
+        "1. Quyidagi karta raqamiga <b>ixtiyoriy summa (kamida 1,000 so'm)</b> o'tkazing:\n"
         f"💳 <code>{card_number}</code>\n"
         "<i>(Karta raqami ustiga bossangiz, avtomatik nusxalanadi 📲)</i>\n"
         "To'lov ilovalari: <b>Click / Payme / Uzum / Paynet</b>\n\n"
@@ -1074,6 +1074,7 @@ async def mag_check_received(message: Message, state: FSMContext, bot: Bot):
     
     file_id = message.photo[-1].file_id if message.photo else message.document.file_id
     file_type = "photo" if message.photo else "document"
+    min_amount = getattr(config, "MIN_PAYMENT_AMOUNT", 1000)
     
     # 1. Chekni ma'lumotlar bazasiga xavfsiz saqlaymiz (hech narsa yo'qolmaydi!)
     receipt_id = await database.save_payment_receipt(
@@ -1082,14 +1083,15 @@ async def mag_check_received(message: Message, state: FSMContext, bot: Bot):
         username=message.from_user.username,
         file_id=file_id,
         file_type=file_type,
-        amount=5000
+        amount=min_amount
     )
     
     admin_caption = (
-        f"🧾 <b>Yangi VIP Jurnal To'lov Cheki #{receipt_id} (5,000 so'm)!</b>\n\n"
+        f"🧾 <b>Yangi VIP Jurnal To'lov Cheki #{receipt_id}!</b>\n\n"
         f"👤 Foydalanuvchi: <b>{html.escape(message.from_user.full_name)}</b>\n"
         f"🆔 ID: <code>{message.from_user.id}</code>\n"
         f"🔗 Username: @{message.from_user.username or 'mavjud_emas'}\n"
+        f"💵 Summa: <b>Ixtiyoriy to'lov (kamida {min_amount:,} so'm)</b>\n"
         f"📅 Vaqti: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
         "To'lovni tasdiqlaysizmi?"
     )
