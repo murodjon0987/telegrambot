@@ -4,6 +4,7 @@ import html
 import hashlib
 import logging
 import os
+import random
 import re
 import sys
 import time
@@ -42,7 +43,7 @@ from characters import (
     CHARACTERS, CATEGORIES, PROFESSIONS, generate_custom_message,
     QUIZ_QUESTIONS, QUIZ_RESULTS, CERTIFICATES, generate_certificate_text,
     DAILY_FORTUNES, get_daily_fortune, generate_random_roulette,
-    MAGAZINE_TITLES
+    MAGAZINE_TITLES, generate_group_roast
 )
 
 SITE_PHOTOS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site_photos")
@@ -234,6 +235,12 @@ class MandatorySubscriptionMiddleware(BaseMiddleware):
         
         if isinstance(event, CallbackQuery) and event.data == "check_subscription":
             return await handler(event, data)
+
+        # Guruh va Superguruhlarda majburiy obuna so'ralmaydi (guruhlar spamsiz erkin foydalanishi uchun)
+        if isinstance(event, Message) and event.chat.type in ("group", "supergroup"):
+            return await handler(event, data)
+        if isinstance(event, CallbackQuery) and event.message and event.message.chat.type in ("group", "supergroup"):
+            return await handler(event, data)
         
         if user and bot:
             is_sub = await check_user_subscription(bot, user.id)
@@ -270,6 +277,7 @@ def get_reply_main_keyboard(user_id: int = 0):
             KeyboardButton(text="🌟 VIP Jurnal Muqovasi")
         ],
         [
+            KeyboardButton(text="🎁 Yutuqli Konkurs"),
             KeyboardButton(text="👑 Saytdagi Top Boyvachchalar")
         ],
         [
@@ -298,6 +306,10 @@ def get_main_menu_keyboard(user_id: int = 0):
         [
             InlineKeyboardButton(text="🌟 VIP Jurnal Muqovasi (Forbes)", callback_data="start_magazine"),
             InlineKeyboardButton(text="👑 Saytdagi Top Boyvachchalar", callback_data="top_leaderboard")
+        ],
+        [
+            InlineKeyboardButton(text="🎁 Yutuqli Konkurs (+Ballar)", callback_data="open_contest"),
+            InlineKeyboardButton(text="👥 Guruhga Qo'shish (Prank)", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true")
         ],
         [
             InlineKeyboardButton(text="🧠 Qaysi Personajsan? (Test)", callback_data="start_quiz"),
@@ -387,10 +399,15 @@ def get_professions_keyboard():
     buttons.append([InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_result_keyboard(share_text: str, full_message: str = "", greeting_id: int = 0):
-    text_to_share = full_message if full_message else share_text
-    encoded_text = urllib.parse.quote(text_to_share)
-    telegram_share_url = f"https://t.me/share/url?url=https://t.me/parodiya_tabrik_uzbot&text={encoded_text}"
+def get_result_keyboard(share_text: str, full_message: str = "", greeting_id: int = 0, user_id: int = 0):
+    ref_param = f"?start=ref_{user_id}" if user_id else ""
+    bot_url = f"https://t.me/parodiya_tabrik_uzbot{ref_param}"
+    promo_msg = (
+        f"😂 Do'stim, senga atab maxsus parodiya hazil tayyorladim!\n"
+        f"O'zing ham do'stlaringga shunday hazil diplom yoki ovozli tabrik yasab yubor:\n👉 {bot_url}"
+    )
+    encoded_text = urllib.parse.quote(promo_msg)
+    telegram_share_url = f"https://t.me/share/url?url={bot_url}&text={encoded_text}"
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -402,7 +419,10 @@ def get_result_keyboard(share_text: str, full_message: str = "", greeting_id: in
                 InlineKeyboardButton(text="🌟 Do'stga VIP Jurnal Muqovasi Yasash", callback_data="start_magazine")
             ],
             [
-                InlineKeyboardButton(text="📲 Do'stga Ulashish (Telegram)", url=telegram_share_url)
+                InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+10 Ball)", url=telegram_share_url)
+            ],
+            [
+                InlineKeyboardButton(text="👥 Botni Guruhga Qo'shish (Prank)", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true")
             ],
             [
                 InlineKeyboardButton(text="🔄 Yana Boshqa Yaratish", callback_data="start_create"),
@@ -458,7 +478,26 @@ async def check_subscription_callback(call: CallbackQuery, bot: Bot, state: FSMC
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
-    
+
+    if message.chat.type in ("group", "supergroup"):
+        group_welcome = (
+            "🎉 <b>Salom, qadrdonlar! Men guruhdagi eng kulgili parodiya botiman!</b> 😂\n\n"
+            "Guruhda do'stlaringiz ustidan kulish va qiziqarli hazillar qilish uchun buyruqlar:\n"
+            "• <code>/roast</code> [ism yoki xabarga javoban] — Do'stingiz ustidan kulgili parodiya 🚨\n"
+            "• <code>/boyvachcha</code> — Bugungi guruh boyvachchasini aniqlash 👑\n"
+            "• <code>/diplom</code> [ism] — Do'stga kulgili rasmiy guvohnoma berish 📜\n"
+            "• <code>/top</code> — Forbes saytidagi jonli reyting 🏆\n\n"
+            "👇 <b>Shaxsiy ovozli tabrik va diplom yasash uchun bot lichkasiga o'ting:</b>"
+        )
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="✨ Shaxsiy Ovozli Tabrik Yasash (Lichka)", url="https://t.me/parodiya_tabrik_uzbot?start=from_group")],
+                [InlineKeyboardButton(text="👑 Forbes Saytini Ko'rish (Jonli)", url="https://telegrambot-wtzt.onrender.com/leaderboard")]
+            ]
+        )
+        await message.answer(group_welcome, parse_mode="HTML", reply_markup=kb)
+        return
+
     referrer_id = 0
     utm_source = ""
     
@@ -684,6 +723,164 @@ async def leaderboard_handler(event: TelegramObject):
         await event.answer(text, parse_mode="HTML", reply_markup=kb)
 
 # -------------------------------------------------------------
+# 8.1 HAFTALIK VIRUSLI REFERRAL KONKURSI
+# -------------------------------------------------------------
+@router.message(Command("konkurs"))
+@router.message(F.text == "🎁 Yutuqli Konkurs")
+@router.callback_query(F.data == "open_contest")
+async def contest_handler(event: TelegramObject):
+    user_id = event.from_user.id
+    user_stats = await database.get_user_contest_stats(user_id)
+    invites = user_stats.get("invite_count", 0)
+    rank = user_stats.get("rank", "-")
+    
+    ref_link = f"https://t.me/parodiya_tabrik_uzbot?start=ref_{user_id}"
+    viral_text = urllib.parse.quote(
+        f"😂 Do'stim, Telegramdagi eng zo'r parodiya botga kirib ko'r! Mashhurlar ovozida tabriklar va kulgili rasmiy diplomlar yasab beradi:\n👉 {ref_link}"
+    )
+    share_url = f"https://t.me/share/url?url={ref_link}&text={viral_text}"
+    
+    text = (
+        "🎁 <b>HAFTALIK VIRUSLI REFERRAL KONKURSI!</b> 🏆\n\n"
+        "Do'stlaringizni botga taklif qiling va qimmatbaho sovg'alarga ega bo'ling!\n\n"
+        "👑 <b>G'oliblarga Sovg'alar:</b>\n"
+        "🥇 <b>1-o'rin:</b> Forbes Jonli Saytida #1 Oltin O'rin + VIP Jurnal (Mutlaqo Bepul!)\n"
+        "🥈 <b>2-o'rin:</b> VIP Forbes Jurnali Muqovasi + 50 Ball!\n"
+        "🥉 <b>3-o'rin:</b> Rasmiy VIP Parodiya Diplomlar to'plami + 30 Ball!\n\n"
+        "📊 <b>Sizning ko'rsatkichlaringiz:</b>\n"
+        f"👥 Taklif qilgan do'stlaringiz: <b>{invites} ta</b>\n"
+        f"🏅 Joriy o'rningiz: <b>#{rank}</b>\n\n"
+        "🔗 <b>Sizning shaxsiy taklif havolangiz:</b>\n"
+        f"<code>{ref_link}</code>\n\n"
+        "💡 <i>Har bir taklif qilingan do'stingiz uchun sizga darhol <b>+10 ball</b> beriladi!</i>"
+    )
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+10 Ball)", url=share_url)
+            ],
+            [
+                InlineKeyboardButton(text="🏆 Top 10 Ishtirokchilar", callback_data="contest_top10"),
+                InlineKeyboardButton(text="👥 Guruhga Qo'shish (Prank)", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true")
+            ],
+            [
+                InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
+            ]
+        ]
+    )
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await event.answer()
+    else:
+        await event.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data == "contest_top10")
+async def contest_top10_handler(call: CallbackQuery):
+    leaders = await database.get_contest_leaderboard(limit=10)
+    if not leaders:
+        await call.answer("Hozircha konkurs ishtirokchilari yo'q. Birinchi bo'ling!", show_alert=True)
+        return
+
+    text = "🏆 <b>HAFTALIK KONKURS — TOP 10 ISHTIROKCHILAR:</b>\n\n"
+    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    for idx, item in enumerate(leaders):
+        m = medals[idx] if idx < len(medals) else f"#{idx+1}"
+        fname = html.escape(item.get("first_name", "Foydalanuvchi"))
+        cnt = item.get("invite_count", 0)
+        text += f"{m} <b>{fname}</b> — <b>{cnt} ta</b> do'st taklif qilgan\n"
+
+    text += "\n🚀 <i>Siz ham do'stlaringizni taklif qilib, reyting cho'qqisiga chiqing!</i>"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Konkursga Qaytish", callback_data="open_contest")],
+            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
+        ]
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+# -------------------------------------------------------------
+# 8.2 TELEGRAM GURUHLAR REJIMI (GROUP VIRALITY & PRANK)
+# -------------------------------------------------------------
+@router.message(Command("roast", "prank", "hazil"))
+async def cmd_group_roast(message: Message):
+    target_name = ""
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_name = message.reply_to_message.from_user.full_name
+    else:
+        args = message.text.split(maxsplit=1)[1:]
+        if args:
+            target_name = args[0].strip()
+        else:
+            target_name = message.from_user.full_name
+
+    target_name = html.escape(target_name)
+    roast_text = generate_group_roast(target_name)
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🎙 Do'stga Ovozli Tabrik Yasash (Lichka)", url="https://t.me/parodiya_tabrik_uzbot?start=roast_cta")
+            ],
+            [
+                InlineKeyboardButton(text="👥 Boshqa Guruhga Qo'shish", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true")
+            ]
+        ]
+    )
+    await message.reply(roast_text, parse_mode="HTML", reply_markup=kb)
+
+@router.message(Command("boyvachcha"))
+async def cmd_group_boyvachcha(message: Message):
+    user_name = html.escape(message.from_user.full_name)
+    text = (
+        f"👑 <b>GURUHNING BUGUNGI QIROLI VA BOYVACHCHASI:</b> <b>{user_name}</b>! 💰\n\n"
+        f"Barcha guruh a'zolari nomidan {user_name}ga eng saxiy, eng ochiqko'ngil inson unvoni berildi!\n"
+        "Endi choyxonada yoki kafeda hisobni to'lash ham shu insonning gardanida bo'ladi! 😂\n\n"
+        "🏆 <i>Forbes Uzbekistan rasmiy reytingida do'stingizni #1 o'ringa chiqarmoqchimisiz?</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Forbes Jonli Sayti (Web)", url="https://telegrambot-wtzt.onrender.com/leaderboard")],
+            [InlineKeyboardButton(text="🚀 Do'stimni Saytga Joylash (+O'rin)", url="https://t.me/parodiya_tabrik_uzbot?start=top_boyvachcha")]
+        ]
+    )
+    await message.reply(text, parse_mode="HTML", reply_markup=kb)
+
+@router.message(Command("diplom"))
+async def cmd_group_diplom(message: Message):
+    target_name = ""
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_name = message.reply_to_message.from_user.full_name
+    else:
+        args = message.text.split(maxsplit=1)[1:]
+        if args:
+            target_name = args[0].strip()
+        else:
+            target_name = message.from_user.full_name
+
+    target_name = html.escape(target_name)
+    sender_name = html.escape(message.from_user.full_name)
+    
+    cert_keys = ["choyxona", "boydoq", "uyquchi", "qarz_yoq", "giybat", "boyvachcha"]
+    chosen_key = random.choice(cert_keys)
+    cert_text = generate_certificate_text(chosen_key, target_name, sender_name)
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📜 O'zingiz ham Diplom Yasang (Lichka)", url="https://t.me/parodiya_tabrik_uzbot?start=cert_group")],
+            [InlineKeyboardButton(text="👥 Boshqa Guruhga Qo'shish", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true")]
+        ]
+    )
+    await message.reply(
+        f"🎉 <b>{target_name} uchun rasmiy parodiya diplomi topshirildi!</b>\n\n"
+        f"<pre><code class=\"language-text\">{cert_text}</code></pre>",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+# -------------------------------------------------------------
 # 9. KULGILI TEST (QAYSI PERSONAJSAN?)
 # -------------------------------------------------------------
 @router.message(Command("quiz"))
@@ -889,7 +1086,7 @@ async def cert_sender_entered(message: Message, state: FSMContext):
         "⭐️ <i>Sizga sertifikat yaratganingiz uchun <b>+2 ball</b> berildi!</i>"
     )
     
-    await message.answer(res_display, parse_mode="HTML", reply_markup=get_result_keyboard(f"{recipient_name} uchun diplom!", cert_text, g_id))
+    await message.answer(res_display, parse_mode="HTML", reply_markup=get_result_keyboard(f"{recipient_name} uchun diplom!", cert_text, g_id, user_id=message.from_user.id))
 
 # -------------------------------------------------------------
 # 11. TAVAKKAL OMAD BARABANI (ROULETTE)
@@ -928,7 +1125,7 @@ async def roulette_spin_handler(event: TelegramObject):
         "⭐️ <i>Sizga omad barabani uchun <b>+1 ball</b> berildi!</i>"
     )
     
-    await target_message.edit_text(res_text, parse_mode="HTML", reply_markup=get_result_keyboard("Omadli parodiya!", roulette_data['text'], g_id))
+    await target_message.edit_text(res_text, parse_mode="HTML", reply_markup=get_result_keyboard("Omadli parodiya!", roulette_data['text'], g_id, user_id=event.from_user.id))
 
 # -------------------------------------------------------------
 # 12. KUNLIK KULGILI BASHORAT (GOROSKOP)
@@ -1013,10 +1210,24 @@ async def get_image_callback(call: CallbackQuery):
                 f"🎭 Obraz: <b>{char_name}</b>\n\n"
                 "👉 @parodiya_tabrik_uzbot — Bepul parodiya tabriklar"
             )
+            ref_link = f"https://t.me/parodiya_tabrik_uzbot?start=ref_{call.from_user.id}"
+            share_text = urllib.parse.quote(f"🖼 Do'stim, senga atab maxsus parodiya otkritka tayyorladim!\n👉 {ref_link}")
+            post_kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+10 Ball)", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")
+                    ],
+                    [
+                        InlineKeyboardButton(text="👥 Botni Guruhga Qo'shish", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true"),
+                        InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
+                    ]
+                ]
+            )
             await call.message.answer_photo(
                 photo=FSInputFile(output_png),
                 caption=caption,
-                parse_mode="HTML"
+                parse_mode="HTML",
+                reply_markup=post_kb
             )
     except Exception as e:
         logger.error(f"Rasm yaratishda xatolik: {e}", exc_info=True)
@@ -1459,12 +1670,14 @@ async def mag_title_chosen(call: CallbackQuery, state: FSMContext, bot: Bot):
             
             await database.add_user_points(call.from_user.id, 5, "VIP Jurnal muqovasi yaratildi")
             
-            share_text = f"Do'stim {person_name} Forbes VIP jurnali muqovasiga chiqdi! Sen ham o'zingnikini yarat: https://t.me/parodiya_tabrik_uzbot"
-            share_url = f"https://t.me/share/url?url=https://t.me/parodiya_tabrik_uzbot&text={urllib.parse.quote(share_text)}"
+            ref_link = f"https://t.me/parodiya_tabrik_uzbot?start=ref_{call.from_user.id}"
+            share_text = f"👑 Do'stim {person_name} Forbes VIP jurnali muqovasiga chiqdi! Sen ham rasmingni qo'yib bepul jurnal yasab ko'r:\n👉 {ref_link}"
+            share_url = f"https://t.me/share/url?url={ref_link}&text={urllib.parse.quote(share_text)}"
             
             finish_kb = InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="📲 Do'stlarga Ulashish", url=share_url)],
+                    [InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+10 Ball)", url=share_url)],
+                    [InlineKeyboardButton(text="👥 Botni Guruhga Qo'shish", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true")],
                     [InlineKeyboardButton(text="🌟 Yana Boshqa Jurnal Yaratish", callback_data="start_magazine")],
                     [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
                 ]
@@ -2005,17 +2218,32 @@ async def send_generated_audio(bot: Bot, user_id: int, greeting_id_str: str, not
                 f"🎭 Obraz: <b>{char_name}</b>\n\n"
                 "👉 @parodiya_tabrik_uzbot"
             )
+            ref_link = f"https://t.me/parodiya_tabrik_uzbot?start=ref_{user_id}"
+            share_text = urllib.parse.quote(f"🎙 Do'stim, eshitib ko'r! Senga atab maxsus eksklyuziv ovozli parodiya tayyorladim!\n👉 {ref_link}")
+            audio_kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="📲 Do'stlarga / Guruhga Ulashish (+10 Ball)", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")
+                    ],
+                    [
+                        InlineKeyboardButton(text="👥 Botni Guruhga Qo'shish", url="https://t.me/parodiya_tabrik_uzbot?startgroup=true"),
+                        InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
+                    ]
+                ]
+            )
             await bot.send_voice(
                 chat_id=user_id,
                 voice=FSInputFile(output_mp3),
                 caption=caption,
-                parse_mode="HTML"
+                parse_mode="HTML",
+                reply_markup=audio_kb
             )
             await bot.send_audio(
                 chat_id=user_id,
                 audio=FSInputFile(output_mp3, filename=f"Tabrik_{rec_name}.mp3"),
                 caption="📥 Yuklab olish uchun MP3 fayl",
-                parse_mode="HTML"
+                parse_mode="HTML",
+                reply_markup=audio_kb
             )
     except Exception as e:
         logger.error(f"Audio jo'natishda xatolik: {e}", exc_info=True)
@@ -2210,7 +2438,7 @@ async def sender_entered_handler(message: Message, state: FSMContext):
     await message.answer(
         result_text,
         parse_mode="HTML",
-        reply_markup=get_result_keyboard(f"{recipient_name} uchun eksklyuziv xabar!", share_caption, g_id)
+        reply_markup=get_result_keyboard(f"{recipient_name} uchun eksklyuziv xabar!", share_caption, g_id, user_id=message.from_user.id)
     )
 
 # -------------------------------------------------------------
@@ -3250,6 +3478,10 @@ async def main():
     try:
         await bot.set_my_commands([
             BotCommand(command="start", description="🚀 Bosh menyu"),
+            BotCommand(command="konkurs", description="🎁 Yutuqli Referral Konkursi"),
+            BotCommand(command="roast", description="🚨 Guruhda do'st ustidan hazil parodiya"),
+            BotCommand(command="boyvachcha", description="👑 Guruh boyvachchasini aniqlash"),
+            BotCommand(command="diplom", description="📜 Do'stga kulgili rasmiy diplom"),
             BotCommand(command="profile", description="🏆 Ballaringiz va referral havolangiz"),
             BotCommand(command="quiz", description="🧠 'Qaysi personajsan?' kulgili test"),
             BotCommand(command="certificate", description="📜 Rasmiy parodiya diplom"),

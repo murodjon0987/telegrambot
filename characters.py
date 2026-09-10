@@ -597,6 +597,36 @@ CERTIFICATES = {
         "badge": "OILA POSBONI",
         "icon": "👑",
         "desc": "Oila baxti va fayzi timsoli, eng shirin choy damlaydigan, har qanday vaziyatda dasturxonni to'ldirib turuvchi eng hurmatli va aziz inson deb belgilandi!"
+    },
+    "choyxona": {
+        "title": "🍵 Choyxonadan Qochish Bo'yicha Qidiruvdagi Do'st",
+        "badge": "ENG AYYOR CHOYXONACHI",
+        "icon": "🏃‍♂️",
+        "desc": "Hisob kelganda 'telefonim jiringlab qoldi' deb tashqariga chiqib ketuvchi, choyxona kunlari to'satdan 'ish chiqib qoldi' deydigan, lekin ertasi kuni oshni mazza qilib yeydigan qidiruvdagi do'st deb e'lon qilindi!"
+    },
+    "boydoq": {
+        "title": "🚫 Umrbod Bo'ydoqlik Diplomi",
+        "badge": "FAXRIY BO'YDOQ",
+        "icon": "💍",
+        "desc": "'To'y qachon?' degan qarindoshlarning savollaridan 10 yildan beri ustalarcha qochib yurgan, 'Hali o'qishim bor, karyera qilaman' deb o'zini ovutuvchi faxriy bo'ydoq deb topildi!"
+    },
+    "uyquchi": {
+        "title": "😴 Kuniga 14 Soat Uxlash Bo'yicha Chempion",
+        "badge": "UYQU AKADEMIGI",
+        "icon": "🛌",
+        "desc": "Budilnikni 10 marta surib yana uxlay oladigan, dars va majlisda ko'zi ochiq holda uxlash super-talantiga ega, yostiqdan boshqa hech kimni sevolmaydigan uyqu dahosi deb tan olindi!"
+    },
+    "qarz_yoq": {
+        "title": "💸 Qarz So'rasa Ko'rmay Qoluvchi Do'st Guvohnomasi",
+        "badge": "G'OYIB BO'LUVCHI MISTER",
+        "icon": "👻",
+        "desc": "Telegramda doim 'Online' bo'lsa ham, qarz so'ralsa xabarni 3 kundan keyin ko'radigan, lekin o'ziga pul kerak bo'lsa tuni bilan qo'ng'iroq qiladigan do'st deb e'tirof etildi!"
+    },
+    "giybat": {
+        "title": "📡 Mahallaning Bosh Radari va Bosh Tergovchisi",
+        "badge": "FBI / G'IYBAT GENERALI",
+        "icon": "🕵️",
+        "desc": "Kim qayerga ketdi, kim kimga uylandi — hammasini Markaziy Razvedkadan ham tezroq bilib, 5 daqiqada butun mahallaga ovoza qiladigan bosh axborot agenti deb e'lon qilindi!"
     }
 }
 
@@ -744,3 +774,22 @@ MAGAZINE_TITLES = {
         "badge": "PROFFI HAYDOVCHI"
     }
 }
+
+# -------------------------------------------------------------
+# 16. TELEGRAM GURUHLAR UCHUN VIRUSLI ROAST & PRANK MATNLARI
+# -------------------------------------------------------------
+GROUP_ROASTS = [
+    "🚨 <b>TEZKOR AXBOROT:</b> <b>{target}</b> choyxona kuni to'satdan 'moshinam probkada qoldi' yoki 'telefonim zaryadi tugab qoldi' deb g'oyib bo'lish bo'yicha xalqaro rekord o'rnatgani aniqlandi! Guruh a'zolari nomidan <b>{target}</b>dan 1 lagan devzira osh talab qilinadi! 🍚😂",
+    "👑 <b>GURUHNING RASMIY QARORI:</b> <b>{target}</b> bugun rasman 'Guruhning Eng Katta Boyvachchasi' deb e'lon qilindi! Hisob-kitoblarga ko'ra, u yaqin kunlarda barcha a'zolarga shirinlik yoki qahva olib berishi qat'iyan shart qilib belgilandi! ☕️💰",
+    "🕵️ <b>MAXFIY TEKSHIRUV:</b> <b>{target}</b> Telegramda sutkasiga 25 soat 'Online' o'tirib, guruhdagi savollarga esa 'charchab uxlab qolibman' deb 3 kundan keyin javob qaytarishi fosh bo'ldi! Unga jarima sifatida barcha a'zolarga tabrik yo'llash yuklatildi! 📱😴",
+    "🏎️ <b>DIQQAT QIDIRUV:</b> Guruh a'zosi <b>{target}</b> 'Ertaga ertalab soat 8:00 da ko'rishamiz' deb va'da berib, soat 13:00 da 'endi uyg'ondim' deb yozganligi uchun qidiruvga berildi! 🛌⏰",
+    "💎 <b>RASMIY STATISTIKA:</b> <b>{target}</b> har safar hisob-kitob bo'lganda 'Paymeda pulim tugab qolibdi, keyin tashlab beraman' degan jumlani eng ko'p ishlatgan do'st sifatida Ginnesning Rekordlar kitobiga kiritildi! 💳💸",
+    "🍕 <b>CHIQARILGAN HUKM:</b> Guruh oqsoqollari bir ovozdan <b>{target}</b>ni bugungi eng qadrli va saxiy inson deb topdi. Unga berilgan yagona topshiriq — guruh a'zolariga pitsa buyurtma qilish! 🍕🥳",
+    "📡 <b>RADAR XABARI:</b> <b>{target}</b> mahalladagi va guruhdagi barcha yangiliklarni Markaziy Razvedka Byurosidan (MRB) ham 10 baravar tezroq bilib oluvchi bosh agent deb topildi! 🕵️‍♂️✨",
+    "🏆 <b>YIL CHEMPIONI:</b> <b>{target}</b> 'Hozir 5 minutda yetib boraman' deb aytib, 2 soatdan keyin yetib kelish bo'yicha mutlaq chempionlik kamarini qo'lga kiritdi! ⏳😂"
+]
+
+def generate_group_roast(target_name: str) -> str:
+    template = random.choice(GROUP_ROASTS)
+    return template.format(target=target_name)
+

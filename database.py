@@ -878,3 +878,54 @@ def _get_leaderboard_stats_sync() -> Dict[str, Any]:
 
 async def get_leaderboard_stats() -> Dict[str, Any]:
     return await asyncio.to_thread(_get_leaderboard_stats_sync)
+
+# -------------------------------------------------------------
+# 18. HAFTALIK VIRUSLI REFERRAL KONKURSI
+# -------------------------------------------------------------
+def _get_contest_leaderboard_sync(limit: int = 10) -> List[Dict[str, Any]]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT u.user_id, u.first_name, u.username, COUNT(r.user_id) as invite_count
+            FROM users u
+            JOIN users r ON r.referrer_id = u.user_id
+            WHERE u.is_banned = 0
+            GROUP BY u.user_id
+            ORDER BY invite_count DESC
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cursor.fetchall()]
+
+async def get_contest_leaderboard(limit: int = 10) -> List[Dict[str, Any]]:
+    """Haftalik referral konkursi top yetakchilarini olish."""
+    return await asyncio.to_thread(_get_contest_leaderboard_sync, limit)
+
+def _get_user_contest_stats_sync(user_id: int) -> Dict[str, Any]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ?", (user_id,))
+        count = cursor.fetchone()[0]
+
+        # O'rnini hisoblash
+        cursor.execute("""
+            SELECT COUNT(*) + 1 
+            FROM (
+                SELECT referrer_id, COUNT(*) as c 
+                FROM users 
+                WHERE referrer_id > 0 
+                GROUP BY referrer_id 
+                HAVING c > ?
+            )
+        """, (count,))
+        row = cursor.fetchone()
+        rank = row[0] if (row and count > 0) else "-"
+
+        return {
+            "invite_count": count,
+            "rank": rank
+        }
+
+async def get_user_contest_stats(user_id: int) -> Dict[str, Any]:
+    """Foydalanuvchining konkursdagi ko'rsatkichi va o'rnini olish."""
+    return await asyncio.to_thread(_get_user_contest_stats_sync, user_id)
+
