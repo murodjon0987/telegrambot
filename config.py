@@ -17,6 +17,14 @@ CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/my_shaxsiyolam").strip()
 # Loyiha asoschisi (Muallif)
 CREATOR_USERNAME = os.getenv("CREATOR_USERNAME", "@wenzone72").strip()
 
+# Boshqaruvchi Admin ID (Faqat shu ID ga Admin Panel ko'rinadi)
+ADMIN_ID = int(os.getenv("ADMIN_ID", "6268220201"))
+
+def is_admin(user_id: int) -> bool:
+    """Foydalanuvchi asosiy admin ekanligini tekshiradi."""
+    return user_id == ADMIN_ID
+
 if not BOT_TOKEN:
     # Lokal testda xabar berish
     print("[OGOHLANTIRISH] BOT_TOKEN topilmadi! .env fayliga BOT_TOKEN ni kiriting.")
+

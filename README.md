@@ -7,18 +7,22 @@ Loyihaning asosiy maqsadi: **0 so'm pul sarflab**, noutbuk o'chiq bo'lsa ham bep
 
 ## ✨ Asosiy Xususiyatlar:
 - **🎭 5 xil noyob xarakter:** Saxiy Boyvachcha Otaxon, GAI/Tergovchi, Malika/O'rikzor Savdogari, Shoir & Donishmand, Xorijdagi Shef.
+- **👑 Maxfiy Admin Panel (ID: 6268220201):** Faqat belgilangan admin ko'ra oladigan to'liq boshqaruv paneli.
+- **📜 Jonli Harakatlar Monitoringi (Activity Logs):** Kim qachon kirdi, nima qildi va qanday tabrik yaratdi — barchasi real vaqtda qayd etiladi.
+- **📢 Ommaviy Xabarnoma (Rassilka):** Barcha foydalanuvchilarga matn/rasm/post yuborish va hisobotini olish.
+- **📥 Baza Eksport:** Foydalanuvchilar ro'yxati (CSV) va SQLite ma'lumotlar bazasini to'g'ridan-to'g'ri Telegram orqali yuklab olish.
 - **⚡ Keep-Alive aiohttp server:** Render.com va Koyeb uchun yagona asyncio siklida ishlaydigan veb-server (Zero extra RAM).
 - **🛡️ Crash-Proof Watchdog:** Telegram API yoki tarmoq uzilsa ham avtomatik qayta ulanadi, dastur yiqilmaydi.
 - **💤 Anti-Sleep mexanikasi:** UptimeRobot har 5 daqiqada `/health` manziliga so'rov yuborib, serverni doim uyg'oq tutadi.
-- **💎 Monetizatsiya tayyor:** Click / Payme / Stars integratsiyasi uchun demo to'lov arxitekturasi mavjud.
 
 ---
 
 ## 📁 Loyiha Strukturasi:
 ```
 telegrambot2/
-├── main.py              # Asosiy bot, keep-alive server va watchdog sikli
-├── config.py            # Sozlamalar va muhit o'zgaruvchilari
+├── main.py              # Asosiy bot, admin panel, keep-alive server va watchdog sikli
+├── database.py          # SQLite ma'lumotlar bazasi, jonli monitoring va statistika
+├── config.py            # Sozlamalar, admin ID va muhit o'zgaruvchilari
 ├── characters.py        # Personajlar lug'ati va tabrik generatori
 ├── requirements.txt     # Eng yengil kutubxonalar (aiogram, aiohttp, python-dotenv)
 ├── Dockerfile           # python:3.11-slim asosidagi yengil konteyner

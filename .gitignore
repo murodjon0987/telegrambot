@@ -16,3 +16,10 @@ env/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Ma'lumotlar bazasi va eksport fayllari
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+
