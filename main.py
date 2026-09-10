@@ -1052,11 +1052,15 @@ async def mag_pay_points_cb(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "mag_pay_chk")
 async def mag_pay_check_cb(call: CallbackQuery, state: FSMContext):
     await state.set_state(MagazinePaymentForm.uploading_check)
+    card_number = getattr(config, "PAYMENT_CARD", "4916990340933958")
     text = (
         "🧾 <b>VIP Jurnal Muqovasi Uchun To'lov</b>\n\n"
-        "1. Karta raqamiga <b>5,000 so'm</b> o'tkazing: <code>8600 0000 0000 0000</code> (Click / Payme)\n"
-        "2. To'lov chekining <b>skrinshotini (rasmini)</b> shu yerga yuboring.\n\n"
-        "<i>Chek adminga tekshirish uchun yuboriladi va tasdiqlangach, jurnal yaratish ochiladi!</i>"
+        "1. Quyidagi karta raqamiga <b>5,000 so'm</b> o'tkazing:\n"
+        f"💳 <code>{card_number}</code>\n"
+        "<i>(Karta raqami ustiga bossangiz, avtomatik nusxalanadi 📲)</i>\n"
+        "To'lov ilovalari: <b>Click / Payme / Uzum / Paynet</b>\n\n"
+        "2. To'lov amalga oshirilgach, chekning <b>skrinshotini</b> yoki <b>faylini</b> shu yerga yuboring.\n\n"
+        "<i>Chek adminga tekshirish uchun yuboriladi va tasdiqlanishi bilan jurnal yaratish darhol ochiladi!</i>"
     )
     cancel_kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")]]

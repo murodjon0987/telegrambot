@@ -20,6 +20,9 @@ CREATOR_USERNAME = os.getenv("CREATOR_USERNAME", "@wenzone72").strip()
 # Boshqaruvchi Admin ID (Faqat shu ID ga Admin Panel ko'rinadi)
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6268220201"))
 
+# To'lov karta raqami (VIP Jurnal va pullik xizmatlar uchun)
+PAYMENT_CARD = os.getenv("PAYMENT_CARD", "4916990340933958").strip()
+
 def is_admin(user_id: int) -> bool:
     """Foydalanuvchi asosiy admin ekanligini tekshiradi."""
     return user_id == ADMIN_ID
