@@ -3422,26 +3422,48 @@ async def run_bot_polling_watchdog(bot: Bot, dp: Dispatcher):
             await asyncio.sleep(retry_delay)
 
 LAST_BACKUP_TIME = 0
+LAST_BACKUP_MSG_ID = 0
+LAST_BACKUP_STATS = {"users": -1, "greetings": -1}
 
 async def backup_database_to_cloud(bot: Bot, reason: str = "periodic") -> bool:
     """Ma'lumotlar bazasini Telegram Cloud (Admin chat)ga yuborib, xabarni qadab qo'yadi."""
-    global LAST_BACKUP_TIME
+    global LAST_BACKUP_TIME, LAST_BACKUP_MSG_ID, LAST_BACKUP_STATS
     try:
         if not os.path.exists(database.DB_FILE):
             return False
             
         now_ts = int(time.time())
-        if not reason.startswith("Admin") and (now_ts - LAST_BACKUP_TIME < 30):
+        # Tez-tez zaxiralashdan saqlanish (kamida 60 soniya oraliq)
+        if not reason.startswith("Admin") and (now_ts - LAST_BACKUP_TIME < 60):
             return False
             
         stats = await database.get_statistics()
+        current_stats = {"users": stats.get("total_users", 0), "greetings": stats.get("total_greetings", 0)}
+        
+        # Agar davriy tekshiruv bo'lsa va hech narsa o'zgarmagan bo'lsa — adminni bezovta qilmaslik!
+        if reason.startswith("Davriy") and current_stats == LAST_BACKUP_STATS:
+            return False
+
+        # Eski zaxira xabarini o'chirish (chatda xabarlar to'planib qolmasligi uchun)
+        if LAST_BACKUP_MSG_ID > 0:
+            try:
+                await bot.delete_message(chat_id=config.ADMIN_ID, message_id=LAST_BACKUP_MSG_ID)
+            except Exception:
+                pass
+        else:
+            try:
+                chat = await bot.get_chat(config.ADMIN_ID)
+                if chat.pinned_message and chat.pinned_message.document and "bot_database_backup" in (chat.pinned_message.document.file_name or ""):
+                    await bot.delete_message(chat_id=config.ADMIN_ID, message_id=chat.pinned_message.message_id)
+            except Exception:
+                pass
+
         caption = (
             "🛡️ <b>#DB_BACKUP_AUTO — Bulutli Doimiy Xotira Zaxirasi</b> 📦\n\n"
             f"👥 Jami foydalanuvchilar: <b>{stats['total_users']} ta</b>\n"
             f"🎉 Yaratilgan tabriklar: <b>{stats['total_greetings']} ta</b>\n"
-            f"📅 Vaqt: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
-            f"📌 Sabab: <i>{reason}</i>\n\n"
-            "<i>⚠️ Ushbu xabar bot Renderda o'chib-yonganida bazani 100% qayta tiklash uchun qadalgan (pinned). Iltimos, o'chirib yubormang!</i>"
+            f"📅 Yangilangan: <code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</code>\n\n"
+            "<i>ℹ️ Bu xabar Render qayta yonganda xotirani tiklash uchun qadaladi. Yangi zaxira kelganda eskisi avtomatik o'chiriladi (chatda xabar ko'paymaydi).</i>"
         )
         
         doc_msg = await bot.send_document(
@@ -3458,6 +3480,8 @@ async def backup_database_to_cloud(bot: Bot, reason: str = "periodic") -> bool:
             logger.debug(f"Xabarni pin qilishda eslatma: {pin_err}")
             
         LAST_BACKUP_TIME = now_ts
+        LAST_BACKUP_MSG_ID = doc_msg.message_id
+        LAST_BACKUP_STATS = current_stats
         logger.info(f"💾 Baza Telegram Cloud'ga muvaffaqiyatli saqlandi va qadaldi (Sabab: {reason}).")
         return True
     except Exception as e:
@@ -3490,16 +3514,16 @@ async def restore_database_from_cloud(bot: Bot) -> bool:
     return False
 
 async def auto_cloud_sync_loop(bot: Bot):
-    """Har 15 daqiqada bazani avtomatik ravishda Telegram Cloud'ga zaxiralab turadi."""
-    await asyncio.sleep(120)  # Ishga tushgandan 2 daqiqa o'tib birinchi zaxira
+    """Har 6 soatda bazani tekshirib, agar o'zgarish bo'lsa yangilab turadi."""
+    await asyncio.sleep(600)  # Ishga tushgandan 10 daqiqa o'tib
     while True:
         try:
-            await backup_database_to_cloud(bot, reason="Har 15 daqiqalik avto-sinxronizatsiya")
+            await backup_database_to_cloud(bot, reason="Davriy tekshiruv")
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.warning(f"Auto cloud sync xatosi: {e}")
-        await asyncio.sleep(900)
+        await asyncio.sleep(21600)  # Har 6 soatda
 
 async def anti_sleep_loop():
     """Render.com bepul serveri uxlab qolmasligi uchun har 10 daqiqada o'zining public URL siga so'rov yuboradi."""
