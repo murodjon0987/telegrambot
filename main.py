@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import html
+import hashlib
 import logging
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -154,6 +156,8 @@ class ThrottlingMiddleware(BaseMiddleware):
     def __init__(self, limit: float = 0.5):
         self.limit = limit
         self.last_actions = {}
+        self.flood_counts = {}
+        self.temp_blocks = {}
 
     async def __call__(self, handler, event: TelegramObject, data: dict):
         user = data.get("event_from_user")
@@ -161,18 +165,40 @@ class ThrottlingMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         now = time.time()
-        last_time = self.last_actions.get(user.id, 0.0)
-
-        if now - last_time < self.limit:
-            if isinstance(event, CallbackQuery):
-                await event.answer("⚠️ Iltimos, biroz kuting...", show_alert=False)
+        # Vaqtinchalik bloklangan spamerlarni tekshirish (DDoS/Flood himoyasi)
+        unblock_time = self.temp_blocks.get(user.id, 0.0)
+        if now < unblock_time:
             return
+
+        last_time = self.last_actions.get(user.id, 0.0)
+        if now - last_time < self.limit:
+            count = self.flood_counts.get(user.id, 0) + 1
+            self.flood_counts[user.id] = count
+            if count >= 8:
+                self.temp_blocks[user.id] = now + 30
+                if isinstance(event, Message):
+                    try:
+                        await event.answer("⛔ <b>Spam aniqlandi!</b> Xavfsizlik sababli tizim 30 soniyaga vaqtincha cheklandi.", parse_mode="HTML")
+                    except Exception:
+                        pass
+                return
+
+            if isinstance(event, CallbackQuery):
+                try:
+                    await event.answer("⚠️ Iltimos, biroz kuting...", show_alert=False)
+                except Exception:
+                    pass
+            return
+        else:
+            self.flood_counts[user.id] = 0
 
         self.last_actions[user.id] = now
 
         if len(self.last_actions) > 1000:
             threshold = now - 60
             self.last_actions = {uid: t for uid, t in self.last_actions.items() if t > threshold}
+            self.flood_counts = {uid: c for uid, c in self.flood_counts.items() if uid in self.last_actions}
+            self.temp_blocks = {uid: t for uid, t in self.temp_blocks.items() if t > now}
 
         return await handler(event, data)
 
@@ -1099,20 +1125,85 @@ async def mag_pay_check_cb(call: CallbackQuery, state: FSMContext):
 
 @router.message(MagazinePaymentForm.uploading_check, F.photo | F.document)
 async def mag_check_received(message: Message, state: FSMContext, bot: Bot):
+    # 0. Xavfsizlik tekshiruvi: fayl turi va hajmi
+    if message.photo:
+        file_obj = message.photo[-1]
+        file_id = file_obj.file_id
+        file_unique_id = file_obj.file_unique_id
+        file_type = "photo"
+    else:
+        file_obj = message.document
+        file_id = file_obj.file_id
+        file_unique_id = file_obj.file_unique_id
+        file_type = "document"
+        mime = message.document.mime_type or ""
+        if not mime.startswith("image/"):
+            await message.answer("⚠️ <b>Iltimos, faqat to'lov cheki skrinshotini (rasm ko'rinishida) yuboring!</b>", parse_mode="HTML")
+            return
+        if (message.document.file_size or 0) > 20 * 1024 * 1024:
+            await message.answer("⚠️ Fayl hajmi 20MB dan oshmasligi kerak.")
+            return
+
+    # 1. Takroriy chek tekshiruvi (Telegram file_unique_id bo'yicha)
+    dup = await database.is_receipt_duplicate(file_unique_id=file_unique_id)
+    if dup:
+        dup_date = dup.get("created_at", "avval")
+        dup_id = dup.get("id")
+        await message.answer(
+            f"⛔️ <b>DIQQAT: Ushbu to'lov cheki avval yuborilgan!</b> (Chek #{dup_id})\n\n"
+            f"📅 <b>Yuborilgan sana:</b> {dup_date}\n\n"
+            "⚠️ <i>Xavfsizlik qoidasi: Bitta to'lov chekidan faqat bir marta foydalanish mumkin. Bitta chekni qayta yuborish qat'iyan taqiqlanadi!</i>\n\n"
+            "Iltimos, yangi haqiqiy to'lov chekini yuboring yoki adminga murojaat qiling.",
+            parse_mode="HTML"
+        )
+        return
+
+    # 2. Foydalanuvchida kutilayotgan ko'rib chiqilmagan chek bor-yo'qligini tekshirish
+    if await database.has_pending_receipt(message.from_user.id):
+        await message.answer(
+            "⏳ <b>Sizning oldingi to'lov chekingiz hali tekshiruv jarayonida!</b>\n\n"
+            "Administrator avvalgi chekingizni ko'rib chiqmaguncha, yangi chek yubora olmaysiz. Iltimos, biroz kuting.",
+            parse_mode="HTML"
+        )
+        return
+
+    # 3. Raqamli iz (SHA-256 Hash) tekshiruvi (qayta saqlangan bir xil rasmlarni aniqlash)
+    temp_check = f"temp_chk_mag_{message.from_user.id}_{int(time.time())}.tmp"
+    file_hash = ""
+    try:
+        await bot.download(file_obj, destination=temp_check)
+        if os.path.exists(temp_check):
+            with open(temp_check, "rb") as f:
+                file_hash = hashlib.sha256(f.read()).hexdigest()
+            os.remove(temp_check)
+    except Exception as e:
+        logger.warning(f"Chek hashini hisoblashda xatolik: {e}")
+
+    if file_hash:
+        dup_hash = await database.is_receipt_duplicate(file_hash=file_hash)
+        if dup_hash:
+            dup_id = dup_hash.get("id")
+            await message.answer(
+                f"⛔️ <b>DIQQAT: Ushbu to'lov cheki avval yuborilgan!</b> (Chek #{dup_id})\n\n"
+                "⚠️ <i>Bitta to'lov chekidan faqat bir marta foydalanish mumkin. Tizim chekning raqamli izi (SHA-256) orqali takroriy chekni aniqladi.</i>\n\n"
+                "Iltimos, yangi haqiqiy to'lov chekini yuboring.",
+                parse_mode="HTML"
+            )
+            return
+
     await state.clear()
-    
-    file_id = message.photo[-1].file_id if message.photo else message.document.file_id
-    file_type = "photo" if message.photo else "document"
     min_amount = getattr(config, "MIN_PAYMENT_AMOUNT", 1000)
     
-    # 1. Chekni ma'lumotlar bazasiga xavfsiz saqlaymiz (hech narsa yo'qolmaydi!)
+    # 4. Chekni ma'lumotlar bazasiga xavfsiz saqlaymiz (hech narsa yo'qolmaydi!)
     receipt_id = await database.save_payment_receipt(
         user_id=message.from_user.id,
         full_name=message.from_user.full_name,
         username=message.from_user.username,
         file_id=file_id,
         file_type=file_type,
-        amount=min_amount
+        amount=min_amount,
+        file_unique_id=file_unique_id,
+        file_hash=file_hash
     )
     
     admin_caption = (
@@ -1590,15 +1681,78 @@ async def ldb_title_chosen(call: CallbackQuery, state: FSMContext):
 
 @router.message(LeaderboardForm.uploading_check, F.photo | F.document)
 async def ldb_check_received(message: Message, state: FSMContext, bot: Bot):
+    # 0. Xavfsizlik tekshiruvi: fayl turi va hajmi
+    if message.photo:
+        file_obj = message.photo[-1]
+        file_id = file_obj.file_id
+        file_unique_id = file_obj.file_unique_id
+        file_type = "photo"
+    else:
+        file_obj = message.document
+        file_id = file_obj.file_id
+        file_unique_id = file_obj.file_unique_id
+        file_type = "document"
+        mime = message.document.mime_type or ""
+        if not mime.startswith("image/"):
+            await message.answer("⚠️ <b>Iltimos, faqat to'lov cheki skrinshotini (rasm ko'rinishida) yuboring!</b>", parse_mode="HTML")
+            return
+        if (message.document.file_size or 0) > 20 * 1024 * 1024:
+            await message.answer("⚠️ Fayl hajmi 20MB dan oshmasligi kerak.")
+            return
+
+    # 1. Takroriy chek tekshiruvi (Telegram file_unique_id bo'yicha)
+    dup = await database.is_receipt_duplicate(file_unique_id=file_unique_id)
+    if dup:
+        dup_date = dup.get("created_at", "avval")
+        dup_id = dup.get("id")
+        await message.answer(
+            f"⛔️ <b>DIQQAT: Ushbu to'lov cheki avval yuborilgan!</b> (Chek #{dup_id})\n\n"
+            f"📅 <b>Yuborilgan sana:</b> {dup_date}\n\n"
+            "⚠️ <i>Xavfsizlik qoidasi: Bitta to'lov chekidan faqat bir marta foydalanish mumkin. Bitta chekni qayta yuborish qat'iyan taqiqlanadi!</i>\n\n"
+            "Iltimos, yangi haqiqiy to'lov chekini yuboring yoki adminga murojaat qiling.",
+            parse_mode="HTML"
+        )
+        return
+
+    # 2. Foydalanuvchida kutilayotgan ko'rib chiqilmagan chek bor-yo'qligini tekshirish
+    if await database.has_pending_receipt(message.from_user.id):
+        await message.answer(
+            "⏳ <b>Sizning oldingi to'lov chekingiz hali tekshiruv jarayonida!</b>\n\n"
+            "Administrator avvalgi chekingizni ko'rib chiqmaguncha, yangi chek yubora olmaysiz. Iltimos, biroz kuting.",
+            parse_mode="HTML"
+        )
+        return
+
+    # 3. Raqamli iz (SHA-256 Hash) tekshiruvi (qayta saqlangan bir xil rasmlarni aniqlash)
+    temp_check = f"temp_chk_ldb_{message.from_user.id}_{int(time.time())}.tmp"
+    file_hash = ""
+    try:
+        await bot.download(file_obj, destination=temp_check)
+        if os.path.exists(temp_check):
+            with open(temp_check, "rb") as f:
+                file_hash = hashlib.sha256(f.read()).hexdigest()
+            os.remove(temp_check)
+    except Exception as e:
+        logger.warning(f"Chek hashini hisoblashda xatolik: {e}")
+
+    if file_hash:
+        dup_hash = await database.is_receipt_duplicate(file_hash=file_hash)
+        if dup_hash:
+            dup_id = dup_hash.get("id")
+            await message.answer(
+                f"⛔️ <b>DIQQAT: Ushbu to'lov cheki avval yuborilgan!</b> (Chek #{dup_id})\n\n"
+                "⚠️ <i>Bitta to'lov chekidan faqat bir marta foydalanish mumkin. Tizim chekning raqamli izi (SHA-256) orqali takroriy chekni aniqladi.</i>\n\n"
+                "Iltimos, yangi haqiqiy to'lov chekini yuboring.",
+                parse_mode="HTML"
+            )
+            return
+
     data = await state.get_data()
     await state.clear()
     
     friend_name = data.get("friend_name", "Yil Boyvachchasi")
     friend_title = data.get("friend_title", "Do'stlar Sarvari")
     image_filename = data.get("image_filename", "")
-    
-    file_id = message.photo[-1].file_id if message.photo else message.document.file_id
-    file_type = "photo" if message.photo else "document"
     min_amount = getattr(config, "MIN_PAYMENT_AMOUNT", 1000)
     
     receipt_id = await database.save_payment_receipt(
@@ -1607,7 +1761,9 @@ async def ldb_check_received(message: Message, state: FSMContext, bot: Bot):
         username=message.from_user.username,
         file_id=file_id,
         file_type=file_type,
-        amount=min_amount
+        amount=min_amount,
+        file_unique_id=file_unique_id,
+        file_hash=file_hash
     )
     
     entry_id = await database.add_leaderboard_entry(
@@ -2973,14 +3129,32 @@ async def handle_leaderboard(request: web.Request) -> web.Response:
     entries = await database.get_top_leaderboard(limit=100)
     stats = await database.get_leaderboard_stats()
     html_text = leaderboard_web.render_leaderboard_html(entries, stats, bot_username="parodiya_tabrik_uzbot")
-    return web.Response(text=html_text, content_type="text/html", charset="utf-8")
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "SAMEORIGIN",
+        "X-XSS-Protection": "1; mode=block",
+        "Referrer-Policy": "strict-origin-when-cross-origin"
+    }
+    return web.Response(text=html_text, content_type="text/html", charset="utf-8", headers=headers)
 
 async def handle_leaderboard_photo(request: web.Request) -> web.StreamResponse:
     raw_filename = request.match_info.get("filename", "")
     filename = os.path.basename(raw_filename)
-    file_path = os.path.join(SITE_PHOTOS_DIR, filename)
+    # Xavfsizlik: Path traversal va fayl formatini qat'iy tekshirish
+    if not re.match(r"^[a-zA-Z0-9_\-\.]+\.(jpg|jpeg|png|webp)$", filename, re.IGNORECASE):
+        return web.Response(status=400, text="Noto'g'ri fayl formati")
+
+    file_path = os.path.realpath(os.path.join(SITE_PHOTOS_DIR, filename))
+    canonical_dir = os.path.realpath(SITE_PHOTOS_DIR)
+    if not file_path.startswith(canonical_dir + os.sep) and file_path != canonical_dir:
+        return web.Response(status=403, text="Ruxsat berilmagan yo'l")
+
     if os.path.exists(file_path) and os.path.isfile(file_path):
-        return web.FileResponse(file_path)
+        headers = {
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "public, max-age=86400"
+        }
+        return web.FileResponse(file_path, headers=headers)
     return web.Response(status=404, text="Rasm topilmadi")
 
 def create_web_server() -> web.Application:

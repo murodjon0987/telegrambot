@@ -77,6 +77,7 @@ def _init_db_sync():
         """)
         
         # 4. To'lov cheklari va hisobotlari jadvali
+        # 4. To'lov cheklari va hisobotlari jadvali
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS payment_receipts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,13 +85,23 @@ def _init_db_sync():
                 full_name TEXT,
                 username TEXT,
                 file_id TEXT NOT NULL,
+                file_unique_id TEXT DEFAULT '',
+                file_hash TEXT DEFAULT '',
                 file_type TEXT DEFAULT 'photo',
-                amount INTEGER DEFAULT 5000,
+                amount INTEGER DEFAULT 1000,
                 status TEXT DEFAULT 'pending',
                 created_at TEXT NOT NULL,
                 processed_at TEXT
             )
         """)
+        
+        # Schema migratsiyalari (ustunlar mavjudligini tekshirish)
+        cursor.execute("PRAGMA table_info(payment_receipts);")
+        receipt_cols = [c[1] for c in cursor.fetchall()]
+        if "file_unique_id" not in receipt_cols:
+            cursor.execute("ALTER TABLE payment_receipts ADD COLUMN file_unique_id TEXT DEFAULT '';")
+        if "file_hash" not in receipt_cols:
+            cursor.execute("ALTER TABLE payment_receipts ADD COLUMN file_hash TEXT DEFAULT '';")
         
         # Indekslar (Tezkor qidiruv uchun)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active);")
@@ -102,6 +113,8 @@ def _init_db_sync():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_greetings_user ON greetings(user_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_receipts_status ON payment_receipts(status);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_receipts_user ON payment_receipts(user_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_receipts_unique_id ON payment_receipts(file_unique_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_receipts_hash ON payment_receipts(file_hash);")
         
         # 5. Sayt reytingi (Top Boyvachchalar & Do'stlar shon-sharaf taxtasi)
         cursor.execute("""
@@ -597,20 +610,80 @@ async def export_users_csv(filepath: str) -> str:
 # -------------------------------------------------------------
 # TO'LOV CHEKLARI VA HISOBOTLAR (ADMIN TO'LOVLAR BOSHQARUVI)
 # -------------------------------------------------------------
-def _save_payment_receipt_sync(user_id: int, full_name: str, username: Optional[str], file_id: str, file_type: str = "photo", amount: int = 1000) -> int:
+def _save_payment_receipt_sync(
+    user_id: int, 
+    full_name: str, 
+    username: Optional[str], 
+    file_id: str, 
+    file_type: str = "photo", 
+    amount: int = 1000,
+    file_unique_id: str = "",
+    file_hash: str = ""
+) -> int:
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with _get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO payment_receipts (user_id, full_name, username, file_id, file_type, amount, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
-        """, (user_id, full_name, username or "", file_id, file_type, amount, now_str))
+            INSERT INTO payment_receipts (user_id, full_name, username, file_id, file_unique_id, file_hash, file_type, amount, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+        """, (user_id, full_name, username or "", file_id, file_unique_id, file_hash, file_type, amount, now_str))
         conn.commit()
         return cursor.lastrowid or 0
 
-async def save_payment_receipt(user_id: int, full_name: str, username: Optional[str], file_id: str, file_type: str = "photo", amount: int = 1000) -> int:
+async def save_payment_receipt(
+    user_id: int, 
+    full_name: str, 
+    username: Optional[str], 
+    file_id: str, 
+    file_type: str = "photo", 
+    amount: int = 1000,
+    file_unique_id: str = "",
+    file_hash: str = ""
+) -> int:
     """Yangi tushgan to'lov chekini bazada xavfsiz saqlash."""
-    return await asyncio.to_thread(_save_payment_receipt_sync, user_id, full_name, username, file_id, file_type, amount)
+    return await asyncio.to_thread(
+        _save_payment_receipt_sync, 
+        user_id, full_name, username, file_id, file_type, amount, file_unique_id, file_hash
+    )
+
+def _is_receipt_duplicate_sync(file_unique_id: str = "", file_hash: str = "") -> Optional[Dict[str, Any]]:
+    """Tekshiradi: agar ushbu chek bazada avval ro'yxatdan o'tgan bo'lsa, uni qaytaradi."""
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        if file_unique_id:
+            cursor.execute("""
+                SELECT * FROM payment_receipts
+                WHERE file_unique_id = ? AND status IN ('pending', 'approved')
+                LIMIT 1
+            """, (file_unique_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+        if file_hash:
+            cursor.execute("""
+                SELECT * FROM payment_receipts
+                WHERE file_hash = ? AND status IN ('pending', 'approved')
+                LIMIT 1
+            """, (file_hash,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+        return None
+
+async def is_receipt_duplicate(file_unique_id: str = "", file_hash: str = "") -> Optional[Dict[str, Any]]:
+    """Takroriy chekni aniqlash."""
+    return await asyncio.to_thread(_is_receipt_duplicate_sync, file_unique_id, file_hash)
+
+def _has_pending_receipt_sync(user_id: int) -> bool:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM payment_receipts WHERE user_id = ? AND status = 'pending'", (user_id,))
+        count = cursor.fetchone()[0]
+        return count > 0
+
+async def has_pending_receipt(user_id: int) -> bool:
+    """Foydalanuvchida ayni paytda kutilayotgan tasdiqlanmagan chek borligini tekshirish."""
+    return await asyncio.to_thread(_has_pending_receipt_sync, user_id)
 
 def _get_receipt_by_id_sync(receipt_id: int) -> Optional[Dict[str, Any]]:
     with _get_connection() as conn:
