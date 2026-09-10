@@ -130,4 +130,6 @@ async def generate_audio_voice(text: str, character_key: str, output_path: str) 
             logger.warning(f"Audio generatsiyasida urinish {attempt+1} xato berdi: {e}")
             await asyncio.sleep(1.0)
             
-    raise last_err
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("Audio generatsiya qilib bo'lmadi")

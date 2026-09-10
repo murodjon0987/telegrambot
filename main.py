@@ -7,6 +7,7 @@ import sys
 import time
 import urllib.parse
 from datetime import datetime
+from typing import Optional, List, Dict, Any
 
 from aiohttp import web  # pyrefly: ignore [missing-import] # type: ignore
 from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware  # pyrefly: ignore [missing-import] # type: ignore
