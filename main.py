@@ -1060,10 +1060,9 @@ async def mag_pay_check_cb(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=cancel_kb)
     await call.answer()
 
-@router.message(MagazinePaymentForm.uploading_check, F.photo)
+@router.message(MagazinePaymentForm.uploading_check, F.photo | F.document)
 async def mag_check_received(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
-    photo = message.photo[-1]
     
     admin_caption = (
         "🧾 <b>Yangi VIP Jurnal Muqovasi To'lov Cheki (5,000 so'm)!</b>\n\n"
@@ -1081,17 +1080,35 @@ async def mag_check_received(message: Message, state: FSMContext, bot: Bot):
         ]
     )
     try:
-        await bot.send_photo(
-            chat_id=config.ADMIN_ID,
-            photo=photo.file_id,
-            caption=admin_caption,
-            parse_mode="HTML",
-            reply_markup=admin_kb
-        )
+        if message.photo:
+            photo = message.photo[-1]
+            await bot.send_photo(
+                chat_id=config.ADMIN_ID,
+                photo=photo.file_id,
+                caption=admin_caption,
+                parse_mode="HTML",
+                reply_markup=admin_kb
+            )
+        elif message.document:
+            await bot.send_document(
+                chat_id=config.ADMIN_ID,
+                document=message.document.file_id,
+                caption=admin_caption,
+                parse_mode="HTML",
+                reply_markup=admin_kb
+            )
         await message.answer("✅ <b>Chekingiz qabul qilindi!</b>\nAdministrator tekshirib tasdiqlashi bilan jurnal muqovasi yaratish ochiladi.", parse_mode="HTML")
     except Exception as e:
-        logger.error(f"Adminga chek yuborishda xatolik: {e}")
-        await message.answer("⚠️ Chekni yuborishda xatolik yuz berdi. Iltimos, qayta urinib ko'ring.")
+        logger.error(f"Adminga chek yuborishda xatolik: {e}", exc_info=True)
+        await message.answer(f"⚠️ Chekni adminga jo'natishda xatolik yuz berdi: {e}")
+
+@router.message(MagazinePaymentForm.uploading_check)
+async def mag_check_fallback(message: Message):
+    await message.answer(
+        "⚠️ <b>Iltimos, to'lov chekining skrinshotini (rasm yoki fayl ko'rinishida) yuboring!</b>\n"
+        "Bekor qilish uchun /cancel yoki pastdagi menyudan foydalaning.",
+        parse_mode="HTML"
+    )
 
 @router.callback_query(F.data.startswith("adm_mag_app_"))
 async def adm_mag_app_cb(call: CallbackQuery, bot: Bot):
@@ -1100,7 +1117,14 @@ async def adm_mag_app_cb(call: CallbackQuery, bot: Bot):
         return
     user_id = int(call.data.replace("adm_mag_app_", ""))
     await call.answer("✅ Tasdiqlandi!", show_alert=True)
-    await call.message.edit_caption(caption=call.message.caption + "\n\n✅ <b>ADMIN TASDIQLADI! FOYDALANUVCHIGA RUXSAT BERILDI.</b>", parse_mode="HTML")
+    
+    try:
+        if call.message.photo:
+            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ <b>ADMIN TASDIQLADI! FOYDALANUVCHIGA RUXSAT BERILDI.</b>", parse_mode="HTML")
+        else:
+            await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n✅ <b>ADMIN TASDIQLADI! FOYDALANUVCHIGA RUXSAT BERILDI.</b>", parse_mode="HTML")
+    except Exception:
+        pass
     
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="🚀 Jurnal Muqovasini Yaratish", callback_data="mag_start_approved")]]
@@ -1122,7 +1146,10 @@ async def adm_mag_rej_cb(call: CallbackQuery, bot: Bot):
         return
     user_id = int(call.data.replace("adm_mag_rej_", ""))
     await call.answer("❌ Rad etildi.", show_alert=True)
-    await call.message.edit_caption(caption=call.message.caption + "\n\n❌ <b>TO'LOV RAD ETILDI!</b>", parse_mode="HTML")
+    try:
+        await call.message.edit_caption(caption=(call.message.caption or "") + "\n\n❌ <b>TO'LOV RAD ETILDI!</b>", parse_mode="HTML")
+    except Exception:
+        pass
     try:
         await bot.send_message(
             chat_id=user_id,
@@ -1142,19 +1169,22 @@ async def start_magazine_form(message: Message, state: FSMContext):
     await state.set_state(MagazineForm.uploading_photo)
     prompt = (
         "📸 <b>1-Qadam: Jurnal muqovasi uchun fotosurat yuboring!</b>\n\n"
-        "Do'stingiz yoki o'zingizning yaxshi ko'ringan rasmingizni yuboring (vertikal yoki to'rtburchak selfi ayni muddao)."
+        "Do'stingiz yoki o'zingizning yaxshi ko'ringan rasmingizni (rasm yoki fayl ko'rinishida) yuboring."
     )
     cancel_kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")]]
     )
     await message.answer(prompt, parse_mode="HTML", reply_markup=cancel_kb)
 
-@router.message(MagazineForm.uploading_photo, F.photo)
+@router.message(MagazineForm.uploading_photo, F.photo | F.document)
 async def mag_photo_received(message: Message, state: FSMContext, bot: Bot):
-    photo = message.photo[-1]
     temp_photo = f"user_mag_photo_{message.from_user.id}_{int(time.time())}.jpg"
     try:
-        await bot.download(photo, destination=temp_photo)
+        if message.photo:
+            photo = message.photo[-1]
+            await bot.download(photo, destination=temp_photo)
+        elif message.document:
+            await bot.download(message.document, destination=temp_photo)
     except Exception as e:
         logger.error(f"Rasm yuklab olishda xatolik: {e}")
         await message.answer("❌ Rasmni yuklab olishda xatolik bo'ldi. Iltimos, qaytadan boshqa rasm yuborib ko'ring.")
@@ -1168,6 +1198,10 @@ async def mag_photo_received(message: Message, state: FSMContext, bot: Bot):
         "Masalan: <code>Sardorbek Rahimov</code> yoki <code>Madina Aliyeva</code>"
     )
     await message.answer(prompt, parse_mode="HTML")
+
+@router.message(MagazineForm.uploading_photo)
+async def mag_photo_fallback(message: Message):
+    await message.answer("⚠️ <b>Iltimos, fotosurat (rasm yoki rasm fayli) yuboring!</b>", parse_mode="HTML")
 
 @router.message(MagazineForm.entering_name, F.text)
 async def mag_name_received(message: Message, state: FSMContext):
