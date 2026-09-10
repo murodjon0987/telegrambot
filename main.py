@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import html
 import logging
 import os
 import sys
@@ -22,7 +23,8 @@ from aiogram.types import (  # pyrefly: ignore [missing-import] # type: ignore
     FSInputFile,
     InlineQuery,
     InlineQueryResultArticle,
-    InputTextMessageContent
+    InputTextMessageContent,
+    BotCommand
 )
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramForbiddenError  # pyrefly: ignore [missing-import] # type: ignore
 
@@ -90,7 +92,6 @@ def get_subscription_keyboard():
 
 async def check_user_subscription(bot: Bot, user_id: int) -> bool:
     """Foydalanuvchining ko'rsatilgan kanalda bor-yo'qligini tekshiradi."""
-    # Bosh admin uchun har doim ruxsat beriladi
     if config.is_admin(user_id):
         return True
     try:
@@ -103,14 +104,55 @@ async def check_user_subscription(bot: Bot, user_id: int) -> bool:
         return False
 
 # -------------------------------------------------------------
-# 4. MIDDLEWARE LAR (Tracking va Majburiy Obuna)
+# 4. MIDDLEWARE LAR (Throttling, Ban, Tracking, Majburiy Obuna)
 # -------------------------------------------------------------
+class ThrottlingMiddleware(BaseMiddleware):
+    """Foydalanuvchilar tugmalarni haddan tashqari tez bosib spam qilmasligi uchun (0.5 soniya cheklov)."""
+    def __init__(self, limit: float = 0.5):
+        self.limit = limit
+        self.last_actions = {}
+
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        user = data.get("event_from_user")
+        if not user or config.is_admin(user.id):
+            return await handler(event, data)
+
+        now = time.time()
+        last_time = self.last_actions.get(user.id, 0.0)
+
+        if now - last_time < self.limit:
+            if isinstance(event, CallbackQuery):
+                await event.answer("⚠️ Iltimos, biroz kuting...", show_alert=False)
+            return
+
+        self.last_actions[user.id] = now
+
+        # Xotira tozalash (1000 tadan oshganda)
+        if len(self.last_actions) > 1000:
+            threshold = now - 60
+            self.last_actions = {uid: t for uid, t in self.last_actions.items() if t > threshold}
+
+        return await handler(event, data)
+
+class BanCheckMiddleware(BaseMiddleware):
+    """Bloklangan foydalanuvchilarning so'rovlarini to'xtatish."""
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        user = data.get("event_from_user")
+        if user and not config.is_admin(user.id):
+            if await database.is_user_banned(user.id):
+                if isinstance(event, Message):
+                    await event.answer("⛔ <b>Sizning profilingiz qoidabuzarlik sababli botdan chetlashtirilgan.</b>", parse_mode="HTML")
+                    return
+                elif isinstance(event, CallbackQuery):
+                    await event.answer("⛔ Profilingiz bloklangan!", show_alert=True)
+                    return
+        return await handler(event, data)
+
 class UserTrackingMiddleware(BaseMiddleware):
     """Har bir kelgan xabar va tugma bosilishida foydalanuvchini bazada yangilaydi."""
     async def __call__(self, handler, event: TelegramObject, data: dict):
         user = data.get("event_from_user")
         if user:
-            # Asinxron ravishda foydalanuvchini bazaga qo'shish/yangilash
             asyncio.create_task(database.upsert_user(
                 user_id=user.id,
                 username=user.username,
@@ -152,34 +194,6 @@ class MandatorySubscriptionMiddleware(BaseMiddleware):
         
         return await handler(event, data)
 
-class ThrottlingMiddleware(BaseMiddleware):
-    """Foydalanuvchilar tugmalarni ketma-ket haddan tashqari tez bosib spam qilmasligi uchun (0.5 soniya cheklov)."""
-    def __init__(self, limit: float = 0.5):
-        self.limit = limit
-        self.last_actions = {}
-
-    async def __call__(self, handler, event: TelegramObject, data: dict):
-        user = data.get("event_from_user")
-        if not user or config.is_admin(user.id):
-            return await handler(event, data)
-
-        now = time.time()
-        last_time = self.last_actions.get(user.id, 0.0)
-
-        if now - last_time < self.limit:
-            if isinstance(event, CallbackQuery):
-                await event.answer("⚠️ Iltimos, biroz kuting...", show_alert=False)
-            return
-
-        self.last_actions[user.id] = now
-
-        # Xotira tozalash (1000 tadan oshganda)
-        if len(self.last_actions) > 1000:
-            threshold = now - 60
-            self.last_actions = {uid: t for uid, t in self.last_actions.items() if t > threshold}
-
-        return await handler(event, data)
-
 # -------------------------------------------------------------
 # 5. MENYU KLAVIATURALARI
 # -------------------------------------------------------------
@@ -189,15 +203,17 @@ def get_main_menu_keyboard(user_id: int = 0):
             InlineKeyboardButton(text="🎭 Tabrik Yaratish (Bepul)", callback_data="start_create")
         ],
         [
-            InlineKeyboardButton(text="🌟 Barcha Personajlar", callback_data="all_characters"),
-            InlineKeyboardButton(text="ℹ️ Bot Haqida", callback_data="about_bot")
+            InlineKeyboardButton(text="📂 Mening Tabriklarim", callback_data="my_greetings"),
+            InlineKeyboardButton(text="🌟 Barcha Personajlar", callback_data="all_characters")
         ],
         [
-            InlineKeyboardButton(text="🤝 Reklama & Hamkorlik", callback_data="ads_partnership"),
+            InlineKeyboardButton(text="ℹ️ Bot Haqida", callback_data="about_bot"),
             InlineKeyboardButton(text="⚡ Server Holati", callback_data="server_status")
+        ],
+        [
+            InlineKeyboardButton(text="🤝 Reklama & Hamkorlik", callback_data="ads_partnership")
         ]
     ]
-    # Faqat belgilangan Admin ID ga Admin Panel tugmasi ko'rinadi
     if config.is_admin(user_id):
         buttons.append([
             InlineKeyboardButton(text="👑 Admin Boshqaruv Paneli", callback_data="admin_panel")
@@ -209,15 +225,19 @@ def get_admin_keyboard():
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats"),
-                InlineKeyboardButton(text="📜 Jonli Harakatlar (Logs)", callback_data="admin_logs")
+                InlineKeyboardButton(text="🏆 Reytinglar", callback_data="admin_rankings")
             ],
             [
-                InlineKeyboardButton(text="👥 So'nggi Foydalanuvchilar", callback_data="admin_users"),
-                InlineKeyboardButton(text="🔍 Qidirish (ID bo'yicha)", callback_data="admin_search_user")
+                InlineKeyboardButton(text="📜 Jonli Harakatlar (Logs)", callback_data="admin_logs"),
+                InlineKeyboardButton(text="👥 Foydalanuvchilar", callback_data="admin_users")
             ],
             [
-                InlineKeyboardButton(text="📢 Xabarnoma (Rassilka)", callback_data="admin_broadcast"),
-                InlineKeyboardButton(text="📥 Baza Eksport (CSV/DB)", callback_data="admin_export")
+                InlineKeyboardButton(text="🔍 Qidirish (ID bo'yicha)", callback_data="admin_search_user"),
+                InlineKeyboardButton(text="📢 Rassilka Yuborish", callback_data="admin_broadcast")
+            ],
+            [
+                InlineKeyboardButton(text="📥 Baza Eksport (CSV/DB)", callback_data="admin_export"),
+                InlineKeyboardButton(text="🧹 Loglarni Tozalash", callback_data="admin_cleanup")
             ],
             [
                 InlineKeyboardButton(text="🔄 Yangilash", callback_data="admin_panel"),
@@ -293,6 +313,8 @@ router = Router()
 # Middlewarelarni ro'yxatdan o'tkazish
 router.message.middleware(ThrottlingMiddleware())
 router.callback_query.middleware(ThrottlingMiddleware())
+router.message.middleware(BanCheckMiddleware())
+router.callback_query.middleware(BanCheckMiddleware())
 router.message.middleware(UserTrackingMiddleware())
 router.callback_query.middleware(UserTrackingMiddleware())
 router.message.middleware(MandatorySubscriptionMiddleware())
@@ -313,9 +335,9 @@ async def check_subscription_callback(call: CallbackQuery, bot: Bot, state: FSMC
         await call.answer("✅ Rahmat! Obuna tasdiqlandi. Xush kelibsiz!", show_alert=True)
         await state.clear()
         welcome_text = (
-            f"Assalomu alaykum, <b>{call.from_user.first_name}</b>! 🎭\n\n"
+            f"Assalomu alaykum, <b>{html.escape(call.from_user.first_name)}</b>! 🎭\n\n"
             "<b>«Parodiya Tabrik & Mashhurlar Qutlovi»</b> botiga xush kelibsiz!\n\n"
-            "Barcha personajlar va tabriklar siz uchun <b>100% BEPUL</b>! 🎉\n\n"
+            "Barcha 8 ta personaj va eksklyuziv tabriklar siz uchun <b>100% BEPUL</b>! 🎉\n\n"
             "Quyidagi tugmani bosing va do'stingiz uchun ajoyib qutlov tayyorlang:"
         )
         await call.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=get_main_menu_keyboard(call.from_user.id))
@@ -325,21 +347,131 @@ async def check_subscription_callback(call: CallbackQuery, bot: Bot, state: FSMC
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
+    
+    referrer_id = 0
+    utm_source = ""
+    
+    # Deep linking argumentlarini tahlil qilish (masalan: /start ref_12345 yoki /start ad_telegram)
+    args = message.text.split()[1:]
+    if args:
+        payload = args[0]
+        if payload.startswith("ref_") and payload[4:].isdigit():
+            potential_ref = int(payload[4:])
+            if potential_ref != message.from_user.id:
+                referrer_id = potential_ref
+        elif payload.startswith("ad_"):
+            utm_source = html.escape(payload[3:50])
+        else:
+            utm_source = html.escape(payload[:50])
+
+    await database.upsert_user(
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name or "",
+        last_name=message.from_user.last_name or "",
+        referrer_id=referrer_id,
+        utm_source=utm_source
+    )
+
     await database.log_activity(
         user_id=message.from_user.id,
         username=message.from_user.username,
         full_name=message.from_user.full_name,
         action="START",
-        details="Botni ishga tushirdi (/start)"
+        details=f"Botni ishga tushirdi (/start, ref={referrer_id}, utm={utm_source})"
     )
+    
     welcome_text = (
-        f"Assalomu alaykum, <b>{message.from_user.first_name}</b>! 🎭\n\n"
+        f"Assalomu alaykum, <b>{html.escape(message.from_user.first_name)}</b>! 🎭\n\n"
         "<b>«Parodiya Tabrik & Mashhurlar Qutlovi»</b> botiga xush kelibsiz!\n\n"
-        "Ushbu bot orqali yaqinlaringizni O'zbekistondagi mashhur "
-        "personajlar tilida mutlaqo <b>BEPUL</b> qutlashingiz mumkin! 😄\n\n"
+        "Ushbu bot orqali yaqinlaringizni O'zbekistondagi eng mashhur "
+        "8 ta personaj tilida mutlaqo <b>BEPUL</b> qutlashingiz mumkin! 😄\n\n"
         "Quyidagi tugmani bosing va tabrik yarating:"
     )
     await message.answer(welcome_text, parse_mode="HTML", reply_markup=get_main_menu_keyboard(message.from_user.id))
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    help_text = (
+        "📖 <b>«Parodiya Tabrik Boti» Qo'llanmasi:</b>\n\n"
+        "1️⃣ <b>Tabrik yaratish:</b> Asosiy menyudan <b>«🎭 Tabrik Yaratish»</b> tugmasini bosing.\n"
+        "2️⃣ <b>Toifa va Personaj tanlang:</b> Tug'ilgan kun, qarz so'rash, hazil yoki motivatsiyadan birini tanlang.\n"
+        "3️⃣ <b>Ism va kasb tanlang:</b> Do'stingizning ismi va kasbini belgilang.\n"
+        "4️⃣ <b>Natijani oling:</b> Bot bir lahzada kulgili qutlov matnini yaratadi. Burchakdagi <b>Copy</b> tugmasi orqali nusxalang yoki to'g'ridan-to'g'ri Telegramda ulashing!\n\n"
+        "📌 <b>Mavjud buyruqlar:</b>\n"
+        "• <code>/start</code> — Bosh menyuni ochish\n"
+        "• <code>/help</code> — Foydalanish qo'llanmasi\n"
+        "• <code>/characters</code> — Barcha 8 ta personaj bilan tanishish\n"
+        "• <code>/mygreetings</code> — Siz yaratgan oxirgi tabriklar tarixi\n"
+        "• <code>/cancel</code> — Joriy amalni bekor qilish\n"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎭 Tabrik Yaratish", callback_data="start_create")],
+            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
+        ]
+    )
+    await message.answer(help_text, parse_mode="HTML", reply_markup=kb)
+
+@router.message(Command("characters"))
+async def cmd_characters(message: Message):
+    text = (
+        "🌟 <b>Mavjud Barcha 8 ta Personaj (100% Bepul):</b>\n\n"
+        "1. 💰 <b>Saxiy Boyvachcha Otaxon</b> — Dollar sochadigan saxiy millioner\n"
+        "2. 👮 <b>Katta Leytenant (GAI)</b> — Qat'iy protokol va jarima hazillari\n"
+        "3. 🍏 <b>Malika Savdogari</b> — O'rikzor va Malikaning chaqqon savdogari\n"
+        "4. 📜 <b>Xalq Donishmandi & Shoir Bobo</b> — Kulgili va falsafiy baytlar\n"
+        "5. 🕶️ <b>Xorijdagi Shef (Don Karleone)</b> — Jiddiy va katta doiradagi mafioz biznesmen\n"
+        "6. 🚕 <b>Toshkent Taksisti (Aka)</b> — 'Bratan, propkada qoldim' uslubidagi taksist\n"
+        "7. 🎓 <b>Charchagan Talaba (Sessiya Qurboni)</b> — Doshirak va stipendiya orzusidagi talaba\n"
+        "8. 🧕 <b>Hazilkash Qaynona & Kelin</b> — Mahalla va qaynona-kelin hazillari\n\n"
+        "<i>Barchasi 100% bepul va cheksiz foydalanish uchun ochiq!</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎭 Tabrik Yaratish", callback_data="start_create")],
+            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
+        ]
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@router.message(Command("mygreetings"))
+@router.callback_query(F.data == "my_greetings")
+async def my_greetings_handler(event: TelegramObject):
+    user = event.from_user
+    greetings = await database.get_user_greetings(user.id, limit=5)
+    
+    if not greetings:
+        text = (
+            "📂 <b>Siz hali birorta ham tabrik yaratmadingiz!</b>\n\n"
+            "Do'stlaringiz va yaqinlaringiz uchun birinchi ajoyib tabrikni yaratish uchun "
+            "quyidagi tugmani bosing:"
+        )
+    else:
+        text = f"📂 <b>Siz yaratgan oxirgi {len(greetings)} ta tabrik:</b>\n\n"
+        for idx, g in enumerate(greetings, 1):
+            char_info = CHARACTERS.get(g['character'], {})
+            char_name = char_info.get('name', g['character'])
+            preview_snippet = html.escape(g['generated_text'][:100])
+            text += (
+                f"<b>{idx}. {html.escape(g['recipient_name'])} uchun</b> ({char_name})\n"
+                f"📅 <i>{g['created_at']}</i>\n"
+                f"💬 <code>{preview_snippet}...</code>\n"
+                "──────────────────\n"
+            )
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎭 Yangi Tabrik Yaratish", callback_data="start_create")],
+            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
+        ]
+    )
+    
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await event.answer()
+    elif isinstance(event, Message):
+        await event.answer(text, parse_mode="HTML", reply_markup=kb)
 
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
@@ -379,12 +511,15 @@ async def all_characters_handler(call: CallbackQuery):
         details="Personajlar ro'yxatini ko'rdi"
     )
     text = (
-        "🌟 <b>Mavjud Barcha Personajlar (100% Bepul):</b>\n\n"
-        "1. 💰 <b>Saxiy Boyvachcha Otaxon</b> — Dollar sochadigan saxiy millioner uslubida\n"
-        "2. 👮 <b>Katta Leytenant (GAI)</b> — Qat'iy nazorat va protokol hazillari bilan\n"
-        "3. 🍏 <b>Malika / O'rikzor Savdogari</b> — 'O'zimni yaqinimga beradigan narxda' uslubi\n"
+        "🌟 <b>Mavjud Barcha 8 ta Personaj (100% Bepul):</b>\n\n"
+        "1. 💰 <b>Saxiy Boyvachcha Otaxon</b> — Dollar sochadigan saxiy millioner\n"
+        "2. 👮 <b>Katta Leytenant (GAI)</b> — Qat'iy nazorat va protokol hazillari\n"
+        "3. 🍏 <b>Malika Savdogari</b> — O'rikzor va Malikaning chaqqon savdogari\n"
         "4. 📜 <b>Xalq Donishmandi & Shoir</b> — Qofiyali, kulgili va falsafiy baytlar\n"
-        "5. 🕶️ <b>Xorijdagi Shef (Don Karleone)</b> — Jiddiy va katta doiradagi nufuzli biznesmen\n\n"
+        "5. 🕶️ <b>Xorijdagi Shef (Don Karleone)</b> — Jiddiy va katta doiradagi nufuzli biznesmen\n"
+        "6. 🚕 <b>Toshkent Taksisti</b> — Poytaxt probkasi va hayotiy hazillar ustasi\n"
+        "7. 🎓 <b>Charchagan Talaba</b> — Sessiya, stipendiya va yotoqxona romantikasi\n"
+        "8. 🧕 <b>Hazilkash Qaynona & Kelin</b> — Mahalla va to'y-marosimlar hazili\n\n"
         "<i>Barcha personajlardan cheksiz va bepul foydalanishingiz mumkin!</i>"
     )
     kb = InlineKeyboardMarkup(
@@ -549,12 +684,13 @@ async def character_chosen_handler(call: CallbackQuery, state: FSMContext):
 
 @router.message(GreetingForm.entering_recipient)
 async def recipient_entered_handler(message: Message, state: FSMContext):
-    name = message.text.strip()
-    if len(name) > 40:
+    raw_name = message.text.strip()
+    if len(raw_name) > 40:
         await message.answer("Iltimos, ismni qisqaroq qilib kiriting (maksimal 40 harf):")
         return
     
-    await state.update_data(recipient_name=name)
+    clean_name = html.escape(raw_name)
+    await state.update_data(recipient_name=clean_name)
     await state.set_state(GreetingForm.choosing_profession)
     
     await database.log_activity(
@@ -562,13 +698,13 @@ async def recipient_entered_handler(message: Message, state: FSMContext):
         username=message.from_user.username,
         full_name=message.from_user.full_name,
         action="ENTER_RECIPIENT",
-        details=f"Qabul qiluvchi ismi kiritildi: {name}"
+        details=f"Qabul qiluvchi ismi kiritildi: {clean_name}"
     )
     
     text = (
-        f"Ajoyib! Demak, <b>{name}</b> uchun tayyorlaymiz.\n\n"
+        f"Ajoyib! Demak, <b>{clean_name}</b> uchun tayyorlaymiz.\n\n"
         "💼 <b>4-Qadam:</b> Matn yanada kulgili va aniq chiqishi uchun — "
-        f"<b>{name} qaysi sohada ishlaydi (kasbi nima)?</b>"
+        f"<b>{clean_name} qaysi sohada ishlaydi (kasbi nima)?</b>"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_professions_keyboard())
 
@@ -599,7 +735,12 @@ async def profession_chosen_handler(call: CallbackQuery, state: FSMContext):
 
 @router.message(GreetingForm.entering_sender)
 async def sender_entered_handler(message: Message, state: FSMContext):
-    sender_name = message.text.strip()
+    raw_sender = message.text.strip()
+    if len(raw_sender) > 50:
+        await message.answer("Iltimos, ismni qisqaroq qilib kiriting (maksimal 50 harf):")
+        return
+
+    sender_name = html.escape(raw_sender)
     data = await state.get_data()
     await state.clear()
     
@@ -639,7 +780,6 @@ async def sender_entered_handler(message: Message, state: FSMContext):
     await message.answer("✨ <b>Matn tayyorlanmoqda... 3, 2, 1...</b>", parse_mode="HTML")
     await asyncio.sleep(1)
     
-    # Burchakda copy bo'lishi uchun maxsus pre code formati
     result_text = (
         "🎉 <b>Eksklyuziv Matn Tayyor Bo'ldi!</b>\n\n"
         "📋 <i>Quyidagi matnning burchagidagi <b>«Copy»</b> tugmasini bosib (yoki matn ustiga 1 marta bosib) nusxalab oling:</i>\n\n"
@@ -661,11 +801,14 @@ async def sender_entered_handler(message: Message, state: FSMContext):
 @router.inline_query()
 async def inline_query_handler(query: InlineQuery):
     raw_text = query.query.strip()
-    recipient = raw_text if raw_text else "Do'stim"
+    recipient = html.escape(raw_text) if raw_text else "Do'stim"
 
     results = []
     sample_chars = [
         ("boyvachcha", "Saxiy Boyvachcha Otaxon", "💰"),
+        ("taksist", "Toshkent Taksisti", "🚕"),
+        ("talaba", "Charchagan Talaba", "🎓"),
+        ("qaynona", "Hazilkash Qaynona", "🧕"),
         ("gai", "Katta Leytenant (GAI)", "👮"),
         ("savdogar", "Malika Savdogari", "🍏"),
         ("mafioz", "Don Karleone (Shef)", "🕶️"),
@@ -696,23 +839,10 @@ async def inline_query_handler(query: InlineQuery):
 # 7. ADMIN PANEL (FAQAT ID: 6268220201 UCHUN)
 # -------------------------------------------------------------
 
-def admin_required(func):
-    """Admin tekshiruvchi dekorator / yordamchi."""
-    async def wrapper(event, *args, **kwargs):
-        user_id = event.from_user.id
-        if not config.is_admin(user_id):
-            if isinstance(event, CallbackQuery):
-                await event.answer("❌ Bu bo'lim faqat bosh administrator uchun!", show_alert=True)
-            elif isinstance(event, Message):
-                await event.answer("❌ Bu buyruq faqat bosh administrator uchun!")
-            return
-        return await func(event, *args, **kwargs)
-    return wrapper
-
 @router.message(Command("admin"))
 async def cmd_admin(message: Message, state: FSMContext):
     if not config.is_admin(message.from_user.id):
-        return  # Boshqalar uchun jim qoladi
+        return
     
     await state.clear()
     stats = await database.get_statistics()
@@ -721,7 +851,8 @@ async def cmd_admin(message: Message, state: FSMContext):
         f"🆔 <b>Admin ID:</b> <code>{message.from_user.id}</code>\n"
         f"👥 <b>Jami foydalanuvchilar:</b> {stats['total_users']} ta\n"
         f"🎁 <b>Yaratilgan tabriklar:</b> {stats['total_greetings']} ta\n"
-        f"📜 <b>Qayd etilgan harakatlar:</b> {stats['total_logs']} ta\n\n"
+        f"📜 <b>Qayd etilgan harakatlar:</b> {stats['total_logs']} ta\n"
+        f"⛔ <b>Bloklanganlar:</b> {stats['banned_users']} ta\n\n"
         "Quyidagi bo'limlardan birini tanlang:"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_admin_keyboard())
@@ -768,7 +899,8 @@ async def admin_panel_callback(call: CallbackQuery, state: FSMContext):
         f"🆔 <b>Admin ID:</b> <code>{call.from_user.id}</code>\n"
         f"👥 <b>Jami foydalanuvchilar:</b> {stats['total_users']} ta\n"
         f"🎁 <b>Yaratilgan tabriklar:</b> {stats['total_greetings']} ta\n"
-        f"📜 <b>Qayd etilgan harakatlar:</b> {stats['total_logs']} ta\n\n"
+        f"📜 <b>Qayd etilgan harakatlar:</b> {stats['total_logs']} ta\n"
+        f"⛔ <b>Bloklanganlar:</b> {stats['banned_users']} ta\n\n"
         "Quyidagi bo'limlardan birini tanlang:"
     )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_admin_keyboard())
@@ -794,12 +926,65 @@ async def admin_stats_callback(call: CallbackQuery):
         f"🎁 <b>Jami yaratilgan tabriklar:</b> {stats['total_greetings']} ta\n"
         f"📅 <b>Bugungi yaratilgan tabriklar:</b> {stats['today_greetings']} ta\n\n"
         f"📜 <b>Jami kuzatilgan amallar:</b> {stats['total_logs']} ta\n"
+        f"⛔ <b>Bloklangan foydalanuvchilar:</b> {stats['banned_users']} ta\n"
         f"⏱ <b>Server Uptime:</b> {hours} soat, {minutes} daqiqa, {seconds} soniya\n"
         f"📢 <b>Majburiy kanal:</b> {config.CHANNEL_ID}\n\n"
         "<i>Barcha ma'lumotlar real vaqt rejimida hisoblanadi.</i>"
     )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_admin_back_keyboard())
     await call.answer()
+
+@router.callback_query(F.data == "admin_rankings")
+async def admin_rankings_callback(call: CallbackQuery):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+    
+    top_stats = await database.get_top_stats()
+    
+    text = "🏆 <b>Eng Ommabop Reytinglar (Top Tanlovlar):</b>\n\n"
+    
+    # 1. Top personajlar
+    text += "🎭 <b>Eng Ko'p Tanlangan Personajlar:</b>\n"
+    if top_stats["top_characters"]:
+        for idx, c in enumerate(top_stats["top_characters"], 1):
+            c_info = CHARACTERS.get(c["character"], {})
+            name = c_info.get("name", c["character"])
+            text += f"{idx}. {name}: <b>{c['count']} marta</b>\n"
+    else:
+        text += "<i>Hali tabriklar yaratilmagan.</i>\n"
+    text += "\n"
+
+    # 2. Top kasblar
+    text += "💼 <b>Eng Ko'p Tanlangan Kasblar:</b>\n"
+    if top_stats["top_professions"]:
+        for idx, p in enumerate(top_stats["top_professions"], 1):
+            title = PROFESSIONS.get(p["profession"], p["profession"])
+            text += f"{idx}. {title}: <b>{p['count']} marta</b>\n"
+    else:
+        text += "<i>Hali kasblar tanlanmagan.</i>\n"
+    text += "\n"
+
+    # 3. Top referrers
+    text += "👥 <b>Eng Ko'p Do'st Taklif Qilganlar:</b>\n"
+    if top_stats["top_referrers"]:
+        for idx, r in enumerate(top_stats["top_referrers"], 1):
+            text += f"{idx}. ID <code>{r['referrer_id']}</code>: <b>{r['ref_count']} ta do'st</b>\n"
+    else:
+        text += "<i>Hali takliflar mavjud emas.</i>\n"
+
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=get_admin_back_keyboard())
+    await call.answer()
+
+@router.callback_query(F.data == "admin_cleanup")
+async def admin_cleanup_callback(call: CallbackQuery):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+    
+    deleted_count = await database.cleanup_old_logs(days=30)
+    await call.answer(f"🧹 {deleted_count} ta eskirgan log tozalandi!", show_alert=True)
+    await admin_panel_callback(call, None)
 
 @router.callback_query(F.data == "admin_logs")
 async def admin_logs_callback(call: CallbackQuery):
@@ -816,12 +1001,12 @@ async def admin_logs_callback(call: CallbackQuery):
         text = "📜 <b>Oxirgi 15 ta Jonli Harakat Jurnali:</b>\n\n"
         for log in logs:
             username_part = f"(@{log['username']})" if log.get("username") else ""
-            user_str = f"<b>{log.get('full_name', 'Foydalanuvchi')}</b> {username_part} [<code>{log['user_id']}</code>]"
+            user_str = f"<b>{html.escape(log.get('full_name', 'Foydalanuvchi'))}</b> {username_part} [<code>{log['user_id']}</code>]"
             text += (
                 f"⏱ <b>{log['created_at']}</b>\n"
                 f"👤 {user_str}\n"
                 f"⚡ <b>Amal:</b> <code>{log['action']}</code>\n"
-                f"📝 <b>Tafsilot:</b> {log['details']}\n"
+                f"📝 <b>Tafsilot:</b> {html.escape(log['details'])}\n"
                 "──────────────────\n"
             )
     
@@ -845,9 +1030,10 @@ async def admin_users_callback(call: CallbackQuery):
             uname = f"@{u['username']}" if u.get("username") else "Mavjud emas"
             fname = u.get("first_name") or ""
             lname = u.get("last_name") or ""
-            full_name = f"{fname} {lname}".strip() or "Noma'lum"
+            full_name = html.escape(f"{fname} {lname}".strip() or "Noma'lum")
+            ban_badge = " [⛔ BLOKLANGAN]" if u.get("is_banned") else ""
             text += (
-                f"<b>{idx}. {full_name}</b> ({uname})\n"
+                f"<b>{idx}. {full_name}</b> ({uname}){ban_badge}\n"
                 f"🆔 ID: <code>{u['user_id']}</code>\n"
                 f"📅 Qo'shilgan: {u['created_at']}\n"
                 f"⚡ Oxirgi faollik: {u['last_active']}\n"
@@ -899,13 +1085,18 @@ async def admin_search_user_result(message: Message, state: FSMContext):
         return
     
     uname = f"@{user_info['username']}" if user_info.get("username") else "Mavjud emas"
-    full_name = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip()
+    full_name = html.escape(f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip() or "Noma'lum")
+    is_banned = bool(user_info.get("is_banned"))
+    utm_source_label = user_info.get("utm_source", "") or "To'g'ridan-to'g'ri"
     
     report = (
         f"👤 <b>Foydalanuvchi Profili:</b>\n\n"
         f"🆔 <b>ID:</b> <code>{user_info['user_id']}</code>\n"
         f"📝 <b>Ism-familiya:</b> {full_name}\n"
         f"🌐 <b>Username:</b> {uname}\n"
+        f"⛔ <b>Holati:</b> {'Bloklangan' if is_banned else 'Faol'}\n"
+        f"👥 <b>Taklif qilgan ID:</b> <code>{user_info.get('referrer_id', 0)}</code>\n"
+        f"🎯 <b>UTM Manba:</b> <code>{utm_source_label}</code>\n"
         f"📅 <b>Birinchi kirgan:</b> {user_info['created_at']}\n"
         f"⚡ <b>Oxirgi faollik:</b> {user_info['last_active']}\n"
         f"🎁 <b>Jami tabriklari:</b> {user_info['greetings_count']} ta\n\n"
@@ -914,15 +1105,47 @@ async def admin_search_user_result(message: Message, state: FSMContext):
     if user_info.get("recent_activities"):
         report += "<b>Oxirgi harakatlari:</b>\n"
         for a in user_info["recent_activities"]:
-            report += f"• [{a['created_at']}] <code>{a['action']}</code>: {a['details']}\n"
+            report += f"• [{a['created_at']}] <code>{a['action']}</code>: {html.escape(a['details'])}\n"
         report += "\n"
         
     if user_info.get("recent_greetings"):
         report += "<b>Oxirgi yaratgan tabriklari:</b>\n"
         for g in user_info["recent_greetings"]:
-            report += f"• [{g['created_at']}] {g['character']} -> {g['recipient_name']} ({g['profession']})\n"
+            report += f"• [{g['created_at']}] {g['character']} -> {html.escape(g['recipient_name'])} ({g['profession']})\n"
+
+    ban_btn_text = "✅ Blokdan Chiqarish" if is_banned else "⛔ Bloklash"
+    ban_cb_data = f"unban_{target_id}" if is_banned else f"ban_{target_id}"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=ban_btn_text, callback_data=ban_cb_data)],
+            [InlineKeyboardButton(text="🔙 Admin Panel", callback_data="admin_panel")]
+        ]
+    )
             
-    await message.answer(report, parse_mode="HTML", reply_markup=get_admin_back_keyboard())
+    await message.answer(report, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("ban_"))
+async def admin_ban_user_callback(call: CallbackQuery):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+    
+    target_id = int(call.data.replace("ban_", ""))
+    await database.ban_user(target_id)
+    await call.answer(f"⛔ {target_id} foydalanuvchi bloklandi!", show_alert=True)
+    await admin_panel_callback(call, None)
+
+@router.callback_query(F.data.startswith("unban_"))
+async def admin_unban_user_callback(call: CallbackQuery):
+    if not config.is_admin(call.from_user.id):
+        await call.answer("❌ Ruxsat yo'q!", show_alert=True)
+        return
+    
+    target_id = int(call.data.replace("unban_", ""))
+    await database.unban_user(target_id)
+    await call.answer(f"✅ {target_id} foydalanuvchi blokdan chiqarildi!", show_alert=True)
+    await admin_panel_callback(call, None)
 
 # --- ADMIN RASSILKA / XABARNOMA BOSQICHLARI ---
 
@@ -935,7 +1158,7 @@ async def admin_broadcast_callback(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminBroadcastForm.entering_message)
     text = (
         "📢 <b>Ommaviy Xabarnoma (Rassilka) Yuborish</b>\n\n"
-        "Barcha foydalanuvchilarga yubormoqchi bo'lgan xabaringizni yuboring.\n"
+        "Barcha faol foydalanuvchilarga yubormoqchi bo'lgan xabaringizni yuboring.\n"
         "<i>(Matn, rasm, video, formatlangan xabar yoki forward qabul qilinadi)</i>"
     )
     kb = InlineKeyboardMarkup(
@@ -952,11 +1175,12 @@ async def admin_broadcast_preview(message: Message, state: FSMContext):
     await state.update_data(broadcast_message_id=message.message_id, broadcast_chat_id=message.chat.id)
     await state.set_state(AdminBroadcastForm.confirming)
     
-    total_users = (await database.get_statistics())["total_users"]
+    user_ids = await database.get_all_user_ids()
+    total_users = len(user_ids)
     
     text = (
         f"📢 <b>Xabar qabul qilindi!</b>\n\n"
-        f"👥 Qabul qiluvchilar soni: <b>{total_users} ta</b> foydalanuvchi.\n\n"
+        f"👥 Qabul qiluvchilar soni: <b>{total_users} ta</b> faol foydalanuvchi.\n\n"
         "Haqiqatan ham ushbu xabarni barcha foydalanuvchilarga yuborishni tasdiqlaysizmi?"
     )
     kb = InlineKeyboardMarkup(
@@ -997,16 +1221,13 @@ async def admin_broadcast_execute(call: CallbackQuery, bot: Bot, state: FSMConte
             await bot.copy_message(chat_id=uid, from_chat_id=chat_id, message_id=msg_id)
             success_count += 1
         except TelegramForbiddenError:
-            # Foydalanuvchi botni bloklagan
             fail_count += 1
         except Exception as e:
             logger.warning(f"Rassilka yuborishda xatolik ({uid}): {e}")
             fail_count += 1
         
-        # Telegram limitlariga tushmaslik uchun kichik tanaffus
         await asyncio.sleep(0.04)
         
-        # Har 20 ta foydalanuvchida statusni yangilab borish
         if idx % 20 == 0 or idx == total:
             try:
                 await status_msg.edit_text(
@@ -1038,12 +1259,10 @@ async def admin_export_callback(call: CallbackQuery, bot: Bot):
     
     await call.answer("⏳ Fayllar tayyorlanmoqda...", show_alert=False)
     
-    # 1. CSV fayl generatsiya qilish
     csv_filename = "users_list_export.csv"
     await database.export_users_csv(csv_filename)
     
     try:
-        # CSV faylni jo'natish
         csv_file = FSInputFile(csv_filename, filename=f"users_{datetime.now().strftime('%Y%m%d_%H%M')}.csv")
         await bot.send_document(
             chat_id=call.from_user.id,
@@ -1052,7 +1271,6 @@ async def admin_export_callback(call: CallbackQuery, bot: Bot):
             parse_mode="HTML"
         )
         
-        # SQLite bazaning o'zini jo'natish
         if os.path.exists(database.DB_FILE):
             db_file = FSInputFile(database.DB_FILE, filename=f"bot_database_{datetime.now().strftime('%Y%m%d_%H%M')}.sqlite")
             await bot.send_document(
@@ -1071,7 +1289,6 @@ async def admin_export_callback(call: CallbackQuery, bot: Bot):
         logger.error(f"Baza eksport qilishda xatolik: {e}", exc_info=True)
         await call.message.answer(f"❌ Fayllarni yuborishda xatolik: {e}", reply_markup=get_admin_back_keyboard())
     finally:
-        # Vaqtinchalik CSV faylni o'chirish
         if os.path.exists(csv_filename):
             try:
                 os.remove(csv_filename)
@@ -1079,7 +1296,7 @@ async def admin_export_callback(call: CallbackQuery, bot: Bot):
                 pass
 
 # -------------------------------------------------------------
-# 8. KEEP-ALIVE AIOHTTP VEB-SERVER (Render / Koyeb talabi)
+# 8. KEEP-ALIVE AIOHTTP VEB-SERVER (Render talabi)
 # -------------------------------------------------------------
 async def handle_root(request: web.Request) -> web.Response:
     stats = await database.get_statistics()
@@ -1135,7 +1352,7 @@ async def auto_backup_loop(bot: Bot):
     """Har 24 soatda avtomatik ravishda bazani admin chatiga (6268220201) zaxira qilib yuboradi."""
     while True:
         try:
-            await asyncio.sleep(86400)  # Har 24 soatda
+            await asyncio.sleep(86400)
             if os.path.exists(database.DB_FILE):
                 csv_path = "auto_backup_users.csv"
                 await database.export_users_csv(csv_path)
@@ -1172,6 +1389,20 @@ async def main():
         return
 
     bot = Bot(token=config.BOT_TOKEN)
+
+    # Bot menyu buyruqlarini ro'yxatdan o'tkazish
+    try:
+        await bot.set_my_commands([
+            BotCommand(command="start", description="🚀 Asosiy menyu"),
+            BotCommand(command="help", description="📖 Qo'llanma"),
+            BotCommand(command="characters", description="🌟 Barcha 8 ta personaj"),
+            BotCommand(command="mygreetings", description="📂 Mening tabriklarim"),
+            BotCommand(command="cancel", description="❌ Amalni bekor qilish"),
+        ])
+        logger.info("✅ Telegram menyu buyruqlari muvaffaqiyatli o'rnatildi.")
+    except Exception as e:
+        logger.warning(f"Menyu buyruqlarini o'rnatishda xatolik: {e}")
+
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
