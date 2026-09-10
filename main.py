@@ -26,6 +26,14 @@ import config
 import database
 from characters import CHARACTERS, CATEGORIES, PROFESSIONS, generate_custom_message
 
+# UTF-8 stdout sozlamalari (Windows da emojilar bilan xatolik chiqmasligi uchun)
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # -------------------------------------------------------------
 # 1. LOGGING VA SOZLAMALAR (Low-RAM Optimization)
 # -------------------------------------------------------------
