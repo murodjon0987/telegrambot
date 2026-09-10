@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import random
+from datetime import datetime
 
 """
 Dinamik ko'p variantli parodiya va hazil generatori.
@@ -487,3 +488,193 @@ Duoyi salomlarimiz:
 Shirin mehr bilan: **Hazilkash Qaynona & Oila** 🫖 (Qadrdoningiz {s_name} tuhfasi)"""
         }
         return greeting_texts.get(char_key, greeting_texts["boyvachcha"])
+
+# -------------------------------------------------------------
+# 11. INTERAKTIV PARODIYA TESTI (VIKTORINA)
+# -------------------------------------------------------------
+QUIZ_QUESTIONS = [
+    {
+        "id": 1,
+        "question": "1-Savol: Ertalab uyg'onganingizda birinchi bo'lib nima deb o'ylaysiz?",
+        "options": [
+            ("A", "Dollar kursi oshdimikin? Darrov hisob-kitob qilish kerak! 💵", "boyvachcha"),
+            ("B", "Bugun darsga bormasam bo'larmikan? Yana 10 minut uxlay... 😴", "talaba"),
+            ("C", "Zapravkada gaz bormikin, Chilonzor yo'li ochildimikin? 🚕", "taksist"),
+            ("D", "Bozorda bugun qanday qilib katta foyda qilsam ekan? 🍏", "savdogar")
+        ]
+    },
+    {
+        "id": 2,
+        "question": "2-Savol: Sevimli tushlik va kayfiyat oshirish usulingiz?",
+        "options": [
+            ("A", "Choyxonada bir qozon sergo'sht to'y oshi! 🍲", "boyvachcha"),
+            ("B", "Kechasi tez tayyorlanadigan qaynoq Doshirak va kofe! 🍜", "talaba"),
+            ("C", "Taksida rulda ketayotib yeyiladigan issiq tandir somsa! 🥟", "taksist"),
+            ("D", "Do'stlar davrasida falsafiy choyxo'rlik va she'rlar! 📜", "shoir")
+        ]
+    },
+    {
+        "id": 3,
+        "question": "3-Savol: Kutilmaganda 100,000 $ yutib olsangiz, birinchi nima qilasiz?",
+        "options": [
+            ("A", "Hamma yaqinlarimga Dubayga chipta olib, katta to'y qilaman! ✈️", "boyvachcha"),
+            ("B", "Kontrakt va barcha qarzlarni yopib, qolganiga uxlab dam olaman! 🎓", "talaba"),
+            ("C", "Eng so'nggi rusumdagi qora Malibu olib, VIP yuraveraman! 🚗", "mafioz"),
+            ("D", "O'rikzor va Malikadan eng zo'r do'konlarni sotib olaman! 🍏", "savdogar")
+        ]
+    }
+]
+
+QUIZ_RESULTS = {
+    "boyvachcha": {
+        "title": "💰 95% — Saxiy Boyvachcha Otaxon!",
+        "desc": "Siz saxovatli, kengfe'l va haqiqiy millioner tabiatli insonsiz! Cho'ntagingizda hatto ozgina pul bo'lsa ham, atrofdagilarga mehmondo'stlik qilishni va 'muammo yo'q jigar' deb yurishni yaxshi ko'rasiz!",
+        "icon": "💎"
+    },
+    "taksist": {
+        "title": "🚕 92% — Toshkent Taksisti!",
+        "desc": "Siz juda sho'x, shoshqaloq va hayotiy hazillarga boy insonsiz! Shaharning har bir burchagini bilasiz va 'Bratan, propkada qoldim' deb vaziyatdan osongina chiqib ketasiz!",
+        "icon": "🚖"
+    },
+    "talaba": {
+        "title": "🎓 90% — Sessiya Qahramoni (Talaba)!",
+        "desc": "Siz eng qiyin vaziyatda ham taslim bo'lmaydigan, improvizatsiya ustasisiz! Kechasi tayyorlanib, ertalab imtihondan o'tib ketish sizning super-qobiliyatingiz!",
+        "icon": "📚"
+    },
+    "savdogar": {
+        "title": "🍏 94% — Malika & O'rikzor Savdogari!",
+        "desc": "Sizning qoningizda biznes va tadbirkorlik oqadi! Toshdan pul chiqaradigan, har qanday odam bilan tez til topishadigan chaqqon va topqir insonsiz!",
+        "icon": "📱"
+    },
+    "shoir": {
+        "title": "📜 91% — Xalq Donishmandi & Shoir!",
+        "desc": "Qalbi daryo, so'zlari hikmatga to'la, nozikta'b insonsiz! Har qanday suhbatni o'zining chiroyli qofiyalari va hazillari bilan bezay olasiz!",
+        "icon": "✍️"
+    },
+    "mafioz": {
+        "title": "🕶️ 96% — Xorijdagi Shef (Don Karleone)!",
+        "desc": "Jiddiy, so'zining ustidan chiqadigan, katta doirada hurmatga ega yetakchisiz! Do'stlaringiz sizga doimo ishonadi va suyanadi!",
+        "icon": "💼"
+    }
+}
+
+# -------------------------------------------------------------
+# 12. RASMIY PARODIYA SERTIFIKAT VA DIPLOM
+# -------------------------------------------------------------
+CERTIFICATES = {
+    "boyvachcha": {
+        "title": "👑 Yilning Saxiy Boyvachchasi",
+        "badge": "MILLIONER DIPLOMI",
+        "icon": "💰",
+        "desc": "Ushbu inson eng saxiy, eng ochiqko'ngil va 'Hamma hisob mendan' deb do'stlarini xursand qiluvchi yilning mutlaq saxovat chempioni deb e'lon qilindi!"
+    },
+    "taksist": {
+        "title": "🚕 Poytaxtning Eng Tezkor Haydovchisi",
+        "badge": "SHAHAR SHUNQORI",
+        "icon": "🏎️",
+        "desc": "Toshkentning har bir ko'chasini 5 qo'ldek biladigan, eng tirband probkalardan ham bir zumda chiqib ketuvchi yilning eng chaqqon va tajribali haydovchisi deb topildi!"
+    },
+    "talaba": {
+        "title": "🎓 Sessiyadan Omon Qolgan Yil Talabasi",
+        "badge": "IMTIHON AKADEMIGI",
+        "icon": "📚",
+        "desc": "Eng qiyin sessiyalardan muvaffaqiyatli o'tgan, Doshirak bilan oylarni yoritgan va domlalarning qalbini zabt etgan yilning eng irodali talabasi deb e'tirof etildi!"
+    },
+    "savdogar": {
+        "title": "🍏 O'rikzor & Malika Bosh Savdogari",
+        "badge": "SAVDO AVTORITETI",
+        "icon": "📱",
+        "desc": "Malika va O'rikzor bozorida tengsiz, 'O'zimga olgan narxda beryapman' deb har qanday tovar va xizmatni 1 minutda pullay oladigan biznes dahosi deb tan olindi!"
+    },
+    "gai": {
+        "title": "👮 Mahallaning Bosh Nazoratchisi",
+        "badge": "QAT'IY PROTOKOL",
+        "icon": "🚨",
+        "desc": "Tartib-intizom va adolat timsoli, barcha nohaqliklarga chek qo'yuvchi va 'Iltimos, qoidalarga amal qiling' deb qat'iy turuvchi bosh posbon deb e'lon qilindi!"
+    },
+    "qaynona": {
+        "title": "🧕 Yilning Eng Mehribon va Epchil Qahramoni",
+        "badge": "OILA POSBONI",
+        "icon": "👑",
+        "desc": "Oila baxti va fayzi timsoli, eng shirin choy damlaydigan, har qanday vaziyatda dasturxonni to'ldirib turuvchi eng hurmatli va aziz inson deb belgilandi!"
+    }
+}
+
+def generate_certificate_text(cert_key: str, recipient_name: str, sender_name: str) -> str:
+    cert_info = CERTIFICATES.get(cert_key, CERTIFICATES["boyvachcha"])
+    title = cert_info["title"]
+    badge = cert_info["badge"]
+    icon = cert_info["icon"]
+    desc = cert_info["desc"]
+    date_str = datetime.now().strftime("%d.%m.%Y")
+
+    return f"""╔══════════════════════════════════════╗
+║   📜 RASMIY PARODIYA SERTIFIKATI     ║
+╚══════════════════════════════════════╝
+
+🎖 **UNVON:** {title} {icon}
+⭐️ **DARAJA:** Oliy Toifali [{badge}]
+
+Ushbu rasmiy sertifikat tasdiqlaydiki:
+👤 **{recipient_name}**
+
+{desc}
+
+🏆 **Tasdiqlovchi:** O'zbekiston Hazilkashlar Birlashmasi
+✍️ **Taqdim etdi:** {sender_name}
+📅 **Berilgan sana:** {date_str}
+🛡 **Maxsus kod:** #CERT-{random.randint(10000, 99999)}
+
+════════════════════════════════════════
+👉 @parodiya_tabrik_uzbot — Do'stlarga hazil sertifikatlar ulashish!"""
+
+# -------------------------------------------------------------
+# 13. KUNLIK KULGILI BASHORATLAR (PARODIYA GOROSKOP)
+# -------------------------------------------------------------
+DAILY_FORTUNES = [
+    "💰 **Boyvachcha Otaxon bashorati:** Bugun cho'ntagingizga kutilmagan joydan daromad kirib keladi, lekin ehtiyot bo'ling — do'stlaringiz darrov oshga tortib ketishi mumkin! Kayfiyatingiz har doim a'lo bo'lsin!",
+    "🚕 **Toshkent Taksisti bashorati:** Bugun sizning barcha ishlaringizda yo'llar yam-yashil bo'ladi! Tirbandliklar sizni aylanib o'tadi, maqsadlaringiz sari 120 tezlikda dadil harakat qiling!",
+    "🎓 **Charchagan Talaba bashorati:** Bugun hayot sizga oson savollar beradi va barchasiga '5' baho olasiz! Bugun orom olish va mazza qilib kofe ichish uchun ajoyib kun!",
+    "🍏 **Malika Savdogari bashorati:** Bugungi har bir muzokara va suhbatingiz 100% foyda bilan yakunlanadi! O'zingizga ishoning, siz eng epchil va omadlisiz!",
+    "📜 **Shoir Bobo bashorati:** Qalbingizga bugun ilhom va quvonch yog'iladi! Yaqin insoningizdan kutilmagan iliq qo'ng'iroq va yoqimli yangilik kutib oling!",
+    "🕶️ **Don Karleone bashorati:** Bugun sizga hech kim rad etolmaydigan ajoyib taklif tushadi! Do'stlaringizga suyaning, obro'yingiz yanada yuqorilaydi!",
+    "👮 **Katta Leytenant bashorati:** Bugungi rejalaringizda hech qanday jarima va to'siq bo'lmaydi! Barcha qoidalar sizning foydangizga ishlaydi!",
+    "🧕 **Hazilkash Qaynona bashorati:** Bugun dasturxoningiz to'kin, kayfiyatingiz esa doston bo'ladi! Qalbingizdagi ezgu niyatlar birin-ketin ro'yobga chiqadi!",
+    "💎 **Omadli Kutilmagan Bashorat:** Bugun sizga eng yaqin do'stingiz quvonchli syurpriz tayyorlamoqda! Telefoningizni quvvatlab qo'ying!",
+    "🚀 **Katta G'alaba Bashorati:** Rejalashtirgan katta maqsadingizga bugun birinchi mustahkam qadamni tashlaysiz. Hech ikkilanmang!",
+    "🍔 **Taom va Quvonch Bashorati:** Bugun sizni ajoyib mehmondorchilik va mazzali tushlik kutmoqda! Parhezni ertaga qoldirsangiz ham bo'ladi!",
+    "🌟 **Oltin Imkoniyat:** Bugun tasodifiy uchratgan insoningiz yoki ko'rgan e'loningiz katta imkoniyat eshigini ochadi! Diqqatli bo'ling!"
+]
+
+def get_daily_fortune(user_id: int) -> str:
+    day_of_year = datetime.now().timetuple().tm_yday
+    idx = (user_id + day_of_year) % len(DAILY_FORTUNES)
+    return DAILY_FORTUNES[idx]
+
+# -------------------------------------------------------------
+# 14. TAVAKKAL OMAD BARABANI (1-CLICK RANDOM TABRIK)
+# -------------------------------------------------------------
+ROULETTE_RECIPIENTS = ["Jigarim", "Do'stim", "Bratan", "Shovvoz", "Qadrdonim", "Chempion"]
+ROULETTE_PROFESSIONS = ["it", "business", "driver", "doctor", "teacher", "student", "general"]
+ROULETTE_CATEGORIES = ["greeting", "roast", "motivation"]
+
+def generate_random_roulette() -> dict:
+    char_key = random.choice(list(CHARACTERS.keys()))
+    prof_key = random.choice(ROULETTE_PROFESSIONS)
+    cat_key = random.choice(ROULETTE_CATEGORIES)
+    rec_name = random.choice(ROULETTE_RECIPIENTS)
+    
+    text = generate_custom_message(
+        char_key=char_key,
+        recipient_name=rec_name,
+        category=cat_key,
+        profession_key=prof_key,
+        sender_name="Omadli Do'stingiz"
+    )
+    
+    char_info = CHARACTERS.get(char_key, {})
+    return {
+        "character": char_info.get("name", char_key),
+        "icon": char_info.get("icon", "🎰"),
+        "text": text
+    }

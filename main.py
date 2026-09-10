@@ -30,7 +30,11 @@ from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramF
 
 import config
 import database
-from characters import CHARACTERS, CATEGORIES, PROFESSIONS, generate_custom_message
+from characters import (
+    CHARACTERS, CATEGORIES, PROFESSIONS, generate_custom_message,
+    QUIZ_QUESTIONS, QUIZ_RESULTS, CERTIFICATES, generate_certificate_text,
+    DAILY_FORTUNES, get_daily_fortune, generate_random_roulette
+)
 
 # UTF-8 stdout sozlamalari (Windows da emojilar bilan xatolik chiqmasligi uchun)
 if hasattr(sys.stdout, "reconfigure"):
@@ -60,6 +64,16 @@ class GreetingForm(StatesGroup):
     choosing_character = State()
     entering_recipient = State()
     choosing_profession = State()
+    entering_sender = State()
+
+class QuizForm(StatesGroup):
+    q1 = State()
+    q2 = State()
+    q3 = State()
+
+class CertificateForm(StatesGroup):
+    choosing_type = State()
+    entering_recipient = State()
     entering_sender = State()
 
 class AdminBroadcastForm(StatesGroup):
@@ -127,7 +141,6 @@ class ThrottlingMiddleware(BaseMiddleware):
 
         self.last_actions[user.id] = now
 
-        # Xotira tozalash (1000 tadan oshganda)
         if len(self.last_actions) > 1000:
             threshold = now - 60
             self.last_actions = {uid: t for uid, t in self.last_actions.items() if t > threshold}
@@ -166,7 +179,6 @@ class MandatorySubscriptionMiddleware(BaseMiddleware):
         bot: Bot = data.get("bot")
         user = data.get("event_from_user")
         
-        # Agar tekshirish tugmasi bosilgan bo'lsa, handlerni o'ziga ruxsat beramiz
         if isinstance(event, CallbackQuery) and event.data == "check_subscription":
             return await handler(event, data)
         
@@ -203,15 +215,24 @@ def get_main_menu_keyboard(user_id: int = 0):
             InlineKeyboardButton(text="🎭 Tabrik Yaratish (Bepul)", callback_data="start_create")
         ],
         [
-            InlineKeyboardButton(text="📂 Mening Tabriklarim", callback_data="my_greetings"),
-            InlineKeyboardButton(text="🌟 Barcha Personajlar", callback_data="all_characters")
+            InlineKeyboardButton(text="🧠 Qaysi Personajsan? (Test)", callback_data="start_quiz"),
+            InlineKeyboardButton(text="📜 Parodiya Sertifikat", callback_data="start_cert")
         ],
         [
-            InlineKeyboardButton(text="ℹ️ Bot Haqida", callback_data="about_bot"),
+            InlineKeyboardButton(text="🎲 Tavakkal Baraban", callback_data="roulette_spin"),
+            InlineKeyboardButton(text="🔮 Kunlik Bashorat", callback_data="daily_fortune")
+        ],
+        [
+            InlineKeyboardButton(text="🏆 Ballar & Profilim", callback_data="my_profile"),
+            InlineKeyboardButton(text="📂 Mening Tabriklarim", callback_data="my_greetings")
+        ],
+        [
+            InlineKeyboardButton(text="🌟 Barcha Personajlar", callback_data="all_characters"),
+            InlineKeyboardButton(text="ℹ️ Bot Haqida", callback_data="about_bot")
+        ],
+        [
+            InlineKeyboardButton(text="🤝 Reklama & Hamkorlik", callback_data="ads_partnership"),
             InlineKeyboardButton(text="⚡ Server Holati", callback_data="server_status")
-        ],
-        [
-            InlineKeyboardButton(text="🤝 Reklama & Hamkorlik", callback_data="ads_partnership")
         ]
     ]
     if config.is_admin(user_id):
@@ -336,22 +357,22 @@ async def check_subscription_callback(call: CallbackQuery, bot: Bot, state: FSMC
         await state.clear()
         welcome_text = (
             f"Assalomu alaykum, <b>{html.escape(call.from_user.first_name)}</b>! 🎭\n\n"
-            "<b>«Parodiya Tabrik & Mashhurlar Qutlovi»</b> botiga xush kelibsiz!\n\n"
-            "Barcha 8 ta personaj va eksklyuziv tabriklar siz uchun <b>100% BEPUL</b>! 🎉\n\n"
-            "Quyidagi tugmani bosing va do'stingiz uchun ajoyib qutlov tayyorlang:"
+            "<b>«Parodiya Tabrik & Qutlovlar»</b> botiga xush kelibsiz!\n\n"
+            "Sizga boshlang'ich <b>+5 ball</b> bonus berildi! 🎁\n"
+            "Quyidagi qiziqarli bo'limlardan birini tanlang va yaqinlaringizga ajoyib kayfiyat ulashing:"
         )
         await call.message.edit_text(welcome_text, parse_mode="HTML", reply_markup=get_main_menu_keyboard(call.from_user.id))
     else:
         await call.answer("❌ Siz hali kanalga a'zo bo'lmadingiz! Iltimos, kanalga obuna bo'ling.", show_alert=True)
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
+async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
     
     referrer_id = 0
     utm_source = ""
     
-    # Deep linking argumentlarini tahlil qilish (masalan: /start ref_12345 yoki /start ad_telegram)
+    # Deep linking tahlili
     args = message.text.split()[1:]
     if args:
         payload = args[0]
@@ -364,7 +385,7 @@ async def cmd_start(message: Message, state: FSMContext):
         else:
             utm_source = html.escape(payload[:50])
 
-    await database.upsert_user(
+    is_new, bonus_ref_id = await database.upsert_user(
         user_id=message.from_user.id,
         username=message.from_user.username,
         first_name=message.from_user.first_name or "",
@@ -372,6 +393,18 @@ async def cmd_start(message: Message, state: FSMContext):
         referrer_id=referrer_id,
         utm_source=utm_source
     )
+
+    # Agar yangi do'st referral orqali qo'shilgan bo'lsa, taklif qilganga xabar berish
+    if is_new and bonus_ref_id > 0:
+        try:
+            ref_notice = (
+                f"🎉 <b>Do'stingiz {html.escape(message.from_user.first_name)} botga qo'shildi!</b>\n\n"
+                "Sizga <b>+10 ball</b> taqdim etildi! 🎁\n"
+                "Profilingiz va yutuqlaringizni ko'rish uchun /profile buyrug'ini bosing."
+            )
+            await bot.send_message(chat_id=bonus_ref_id, text=ref_notice, parse_mode="HTML")
+        except Exception:
+            pass
 
     await database.log_activity(
         user_id=message.from_user.id,
@@ -384,86 +417,112 @@ async def cmd_start(message: Message, state: FSMContext):
     welcome_text = (
         f"Assalomu alaykum, <b>{html.escape(message.from_user.first_name)}</b>! 🎭\n\n"
         "<b>«Parodiya Tabrik & Mashhurlar Qutlovi»</b> botiga xush kelibsiz!\n\n"
-        "Ushbu bot orqali yaqinlaringizni O'zbekistondagi eng mashhur "
-        "8 ta personaj tilida mutlaqo <b>BEPUL</b> qutlashingiz mumkin! 😄\n\n"
-        "Quyidagi tugmani bosing va tabrik yarating:"
+        "✨ Bu yerda siz:\n"
+        "• Mashhurlar tilida eksklyuziv tabriklar yaratishingiz;\n"
+        "• 🧠 <b>«Qaysi personajsan?»</b> testidan o'tishingiz;\n"
+        "• 📜 Do'stlaringizga <b>Rasmiy Parodiya Diplomlar</b> sovg'a qilishingiz;\n"
+        "• 🎲 <b>Omad barabani</b> va 🔮 <b>Kunlik bashorat</b> olishingiz mumkin!\n\n"
+        "Quyidagi menyudan kerakli bo'limni tanlang:"
     )
     await message.answer(welcome_text, parse_mode="HTML", reply_markup=get_main_menu_keyboard(message.from_user.id))
 
-@router.message(Command("help"))
-async def cmd_help(message: Message):
-    help_text = (
-        "📖 <b>«Parodiya Tabrik Boti» Qo'llanmasi:</b>\n\n"
-        "1️⃣ <b>Tabrik yaratish:</b> Asosiy menyudan <b>«🎭 Tabrik Yaratish»</b> tugmasini bosing.\n"
-        "2️⃣ <b>Toifa va Personaj tanlang:</b> Tug'ilgan kun, qarz so'rash, hazil yoki motivatsiyadan birini tanlang.\n"
-        "3️⃣ <b>Ism va kasb tanlang:</b> Do'stingizning ismi va kasbini belgilang.\n"
-        "4️⃣ <b>Natijani oling:</b> Bot bir lahzada kulgili qutlov matnini yaratadi. Burchakdagi <b>Copy</b> tugmasi orqali nusxalang yoki to'g'ridan-to'g'ri Telegramda ulashing!\n\n"
-        "📌 <b>Mavjud buyruqlar:</b>\n"
-        "• <code>/start</code> — Bosh menyuni ochish\n"
-        "• <code>/help</code> — Foydalanish qo'llanmasi\n"
-        "• <code>/characters</code> — Barcha 8 ta personaj bilan tanishish\n"
-        "• <code>/mygreetings</code> — Siz yaratgan oxirgi tabriklar tarixi\n"
-        "• <code>/cancel</code> — Joriy amalni bekor qilish\n"
-    )
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🎭 Tabrik Yaratish", callback_data="start_create")],
-            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
-        ]
-    )
-    await message.answer(help_text, parse_mode="HTML", reply_markup=kb)
-
-@router.message(Command("characters"))
-async def cmd_characters(message: Message):
-    text = (
-        "🌟 <b>Mavjud Barcha 8 ta Personaj (100% Bepul):</b>\n\n"
-        "1. 💰 <b>Saxiy Boyvachcha Otaxon</b> — Dollar sochadigan saxiy millioner\n"
-        "2. 👮 <b>Katta Leytenant (GAI)</b> — Qat'iy protokol va jarima hazillari\n"
-        "3. 🍏 <b>Malika Savdogari</b> — O'rikzor va Malikaning chaqqon savdogari\n"
-        "4. 📜 <b>Xalq Donishmandi & Shoir Bobo</b> — Kulgili va falsafiy baytlar\n"
-        "5. 🕶️ <b>Xorijdagi Shef (Don Karleone)</b> — Jiddiy va katta doiradagi mafioz biznesmen\n"
-        "6. 🚕 <b>Toshkent Taksisti (Aka)</b> — 'Bratan, propkada qoldim' uslubidagi taksist\n"
-        "7. 🎓 <b>Charchagan Talaba (Sessiya Qurboni)</b> — Doshirak va stipendiya orzusidagi talaba\n"
-        "8. 🧕 <b>Hazilkash Qaynona & Kelin</b> — Mahalla va qaynona-kelin hazillari\n\n"
-        "<i>Barchasi 100% bepul va cheksiz foydalanish uchun ochiq!</i>"
-    )
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🎭 Tabrik Yaratish", callback_data="start_create")],
-            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
-        ]
-    )
-    await message.answer(text, parse_mode="HTML", reply_markup=kb)
-
-@router.message(Command("mygreetings"))
-@router.callback_query(F.data == "my_greetings")
-async def my_greetings_handler(event: TelegramObject):
+# -------------------------------------------------------------
+# 7. PROFIL, BALLAR VA REFERRAL TIZIMI
+# -------------------------------------------------------------
+@router.message(Command("profile"))
+@router.callback_query(F.data == "my_profile")
+async def my_profile_handler(event: TelegramObject):
     user = event.from_user
-    greetings = await database.get_user_greetings(user.id, limit=5)
+    profile = await database.get_user_profile(user.id)
     
-    if not greetings:
-        text = (
-            "📂 <b>Siz hali birorta ham tabrik yaratmadingiz!</b>\n\n"
-            "Do'stlaringiz va yaqinlaringiz uchun birinchi ajoyib tabrikni yaratish uchun "
-            "quyidagi tugmani bosing:"
-        )
+    points = profile.get("points", 0)
+    rank_title = profile.get("rank_title", "🥉 Oddiy Mehmon")
+    ref_count = profile.get("ref_count", 0)
+    greetings_count = profile.get("greetings_count", 0)
+    next_rank = profile.get("next_rank", "")
+    needed = profile.get("points_needed", 0)
+    
+    ref_link = f"https://t.me/parodiya_tabrik_uzbot?start=ref_{user.id}"
+    share_text = (
+        "🎭 Do'stim, bu botda mashhurlar tilida kulgili tabriklar, rasmiy diplomlar "
+        "va 'Qaysi personajsan?' testi bor ekan! Juda qiziq, sen ham kirib ko'r: 👇\n"
+        f"{ref_link}"
+    )
+    encoded_share = urllib.parse.quote(share_text)
+    share_url = f"https://t.me/share/url?url={encoded_share}"
+
+    text = (
+        f"👤 <b>Foydalanuvchi Profili: {html.escape(user.first_name)}</b>\n\n"
+        f"🆔 ID: <code>{user.id}</code>\n"
+        f"🎖 <b>Unvoningiz:</b> {rank_title}\n"
+        f"⭐️ <b>To'plagan ballaringiz:</b> <b>{points} ball</b>\n"
+        f"👥 <b>Taklif qilgan do'stlaringiz:</b> {ref_count} ta\n"
+        f"🎁 <b>Yaratgan tabriklaringiz:</b> {greetings_count} ta\n\n"
+    )
+    
+    if needed > 0:
+        text += f"🚀 <b>Keyingi unvon:</b> {next_rank} <i>(yana {needed} ball kerak)</i>\n\n"
     else:
-        text = f"📂 <b>Siz yaratgan oxirgi {len(greetings)} ta tabrik:</b>\n\n"
-        for idx, g in enumerate(greetings, 1):
-            char_info = CHARACTERS.get(g['character'], {})
-            char_name = char_info.get('name', g['character'])
-            preview_snippet = html.escape(g['generated_text'][:100])
-            text += (
-                f"<b>{idx}. {html.escape(g['recipient_name'])} uchun</b> ({char_name})\n"
-                f"📅 <i>{g['created_at']}</i>\n"
-                f"💬 <code>{preview_snippet}...</code>\n"
-                "──────────────────\n"
-            )
-    
+        text += f"🏆 <b>Siz eng yuqori VIP unvondagiz!</b>\n\n"
+
+    text += (
+        "💡 <b>Ballarni qanday to'plash mumkin?</b>\n"
+        "• Har bir do'stni taklif qilganda: <b>+10 ball</b>\n"
+        "• Tabrik yoki Sertifikat yaratganda: <b>+2 ball</b>\n"
+        "• Viktorina testidan o'tganda: <b>+5 ball</b>\n"
+        "• Kunlik bashoratni tekshirganda: <b>+1 ball</b>\n\n"
+        f"🔗 <b>Sizning shaxsiy referral havolangiz:</b>\n"
+        f"<code>{ref_link}</code>"
+    )
+
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🎭 Yangi Tabrik Yaratish", callback_data="start_create")],
-            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
+            [
+                InlineKeyboardButton(text="📲 Do'stlarni Taklif Qilish (+10 ball)", url=share_url)
+            ],
+            [
+                InlineKeyboardButton(text="🏆 Top 10 Peshqadamlar", callback_data="leaderboard")
+            ],
+            [
+                InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
+            ]
+        ]
+    )
+
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await event.answer()
+    elif isinstance(event, Message):
+        await event.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@router.message(Command("top"))
+@router.callback_query(F.data == "leaderboard")
+async def leaderboard_handler(event: TelegramObject):
+    top_users = await database.get_leaderboard(limit=10)
+    
+    text = "🏆 <b>Eng Faol Foydalanuvchilar (Top 10 Peshqadamlar):</b>\n\n"
+    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    
+    if not top_users:
+        text += "<i>Hali peshqadamlar ro'yxati shakllanmagan. Birinchi bo'ling!</i>"
+    else:
+        for idx, u in enumerate(top_users):
+            medal = medals[idx] if idx < len(medals) else "⭐️"
+            uname = f"(@{u['username']})" if u.get("username") else ""
+            fname = html.escape(u.get("first_name", "Foydalanuvchi"))
+            text += (
+                f"{medal} <b>{fname}</b> {uname}\n"
+                f"   ⭐️ Ballar: <b>{u['points']}</b> | 👥 Do'stlar: <b>{u['ref_count']} ta</b>\n"
+            )
+            
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="👤 Mening Profilim", callback_data="my_profile")
+            ],
+            [
+                InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
+            ]
         ]
     )
     
@@ -473,150 +532,317 @@ async def my_greetings_handler(event: TelegramObject):
     elif isinstance(event, Message):
         await event.answer(text, parse_mode="HTML", reply_markup=kb)
 
-@router.message(Command("cancel"))
-async def cmd_cancel(message: Message, state: FSMContext):
+# -------------------------------------------------------------
+# 8. KULGILI TEST (QAYSI PERSONAJSAN?)
+# -------------------------------------------------------------
+@router.message(Command("quiz"))
+@router.callback_query(F.data == "start_quiz")
+async def start_quiz_handler(event: TelegramObject, state: FSMContext):
     await state.clear()
-    await database.log_activity(
-        user_id=message.from_user.id,
-        username=message.from_user.username,
-        full_name=message.from_user.full_name,
-        action="CANCEL",
-        details="Amalni bekor qildi (/cancel)"
+    await state.set_state(QuizForm.q1)
+    
+    q1 = QUIZ_QUESTIONS[0]
+    text = (
+        "🧠 <b>«Qaysi Personajsan?» Kulgili Psixologik Test!</b>\n\n"
+        f"<b>{q1['question']}</b>"
     )
-    await message.answer("❌ Harakat bekor qilindi. Asosiy menyudasiz:", reply_markup=get_main_menu_keyboard(message.from_user.id))
+    buttons = []
+    for opt_key, opt_text, char_val in q1["options"]:
+        buttons.append([InlineKeyboardButton(text=opt_text, callback_data=f"quiz_ans_1_{char_val}")])
+    buttons.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await event.answer()
+    elif isinstance(event, Message):
+        await event.answer(text, parse_mode="HTML", reply_markup=kb)
 
-@router.callback_query(F.data == "back_to_menu")
-async def back_to_menu_handler(call: CallbackQuery, state: FSMContext):
+@router.callback_query(QuizForm.q1, F.data.startswith("quiz_ans_1_"))
+async def quiz_q1_handler(call: CallbackQuery, state: FSMContext):
+    chosen_char = call.data.replace("quiz_ans_1_", "")
+    await state.update_data(ans1=chosen_char)
+    await state.set_state(QuizForm.q2)
+    
+    q2 = QUIZ_QUESTIONS[1]
+    text = (
+        "🧠 <b>«Qaysi Personajsan?» Testi:</b>\n\n"
+        f"<b>{q2['question']}</b>"
+    )
+    buttons = []
+    for opt_key, opt_text, char_val in q2["options"]:
+        buttons.append([InlineKeyboardButton(text=opt_text, callback_data=f"quiz_ans_2_{char_val}")])
+    buttons.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")])
+    
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await call.answer()
+
+@router.callback_query(QuizForm.q2, F.data.startswith("quiz_ans_2_"))
+async def quiz_q2_handler(call: CallbackQuery, state: FSMContext):
+    chosen_char = call.data.replace("quiz_ans_2_", "")
+    await state.update_data(ans2=chosen_char)
+    await state.set_state(QuizForm.q3)
+    
+    q3 = QUIZ_QUESTIONS[2]
+    text = (
+        "🧠 <b>«Qaysi Personajsan?» Testi:</b>\n\n"
+        f"<b>{q3['question']}</b>"
+    )
+    buttons = []
+    for opt_key, opt_text, char_val in q3["options"]:
+        buttons.append([InlineKeyboardButton(text=opt_text, callback_data=f"quiz_ans_3_{char_val}")])
+    buttons.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")])
+    
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await call.answer()
+
+@router.callback_query(QuizForm.q3, F.data.startswith("quiz_ans_3_"))
+async def quiz_q3_handler(call: CallbackQuery, state: FSMContext):
+    chosen_char = call.data.replace("quiz_ans_3_", "")
+    data = await state.get_data()
     await state.clear()
-    await database.log_activity(
-        user_id=call.from_user.id,
-        username=call.from_user.username,
-        full_name=call.from_user.full_name,
-        action="MENU",
-        details="Bosh menyuga qaytdi"
-    )
-    await call.message.edit_text(
-        "Asosiy menyuga qaytdingiz. Qanday amal bajaramiz?",
-        reply_markup=get_main_menu_keyboard(call.from_user.id)
-    )
-    await call.answer()
-
-@router.callback_query(F.data == "all_characters")
-async def all_characters_handler(call: CallbackQuery):
-    await database.log_activity(
-        user_id=call.from_user.id,
-        username=call.from_user.username,
-        full_name=call.from_user.full_name,
-        action="VIEW_CHARACTERS",
-        details="Personajlar ro'yxatini ko'rdi"
-    )
-    text = (
-        "🌟 <b>Mavjud Barcha 8 ta Personaj (100% Bepul):</b>\n\n"
-        "1. 💰 <b>Saxiy Boyvachcha Otaxon</b> — Dollar sochadigan saxiy millioner\n"
-        "2. 👮 <b>Katta Leytenant (GAI)</b> — Qat'iy nazorat va protokol hazillari\n"
-        "3. 🍏 <b>Malika Savdogari</b> — O'rikzor va Malikaning chaqqon savdogari\n"
-        "4. 📜 <b>Xalq Donishmandi & Shoir</b> — Qofiyali, kulgili va falsafiy baytlar\n"
-        "5. 🕶️ <b>Xorijdagi Shef (Don Karleone)</b> — Jiddiy va katta doiradagi nufuzli biznesmen\n"
-        "6. 🚕 <b>Toshkent Taksisti</b> — Poytaxt probkasi va hayotiy hazillar ustasi\n"
-        "7. 🎓 <b>Charchagan Talaba</b> — Sessiya, stipendiya va yotoqxona romantikasi\n"
-        "8. 🧕 <b>Hazilkash Qaynona & Kelin</b> — Mahalla va to'y-marosimlar hazili\n\n"
-        "<i>Barcha personajlardan cheksiz va bepul foydalanishingiz mumkin!</i>"
-    )
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🎭 Tabrik Yaratish", callback_data="start_create")],
-            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]
-        ]
-    )
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    await call.answer()
-
-@router.callback_query(F.data == "about_bot")
-async def about_bot_handler(call: CallbackQuery):
-    await database.log_activity(
-        user_id=call.from_user.id,
-        username=call.from_user.username,
-        full_name=call.from_user.full_name,
-        action="VIEW_ABOUT",
-        details="Bot haqida bo'limini ko'rdi"
-    )
-    text = (
-        "<b>🎭 «Parodiya Tabrik & Qutlovlar» Boti</b>\n\n"
-        "Yaqinlaringiz va do'stlaringizga O'zbekistonning eng mashhur personajlari "
-        "tilida eksklyuziv, kulgili va unutilmas tabriklar ulashuvchi 100% bepul bot! ✨\n\n"
-        f"👑 <b>Loyiha Muallifi:</b> {config.CREATOR_USERNAME}\n"
-        f"📢 <b>Rasmiy Kanal:</b> {config.CHANNEL_ID}\n"
-        "⚡ <b>Xizmat:</b> 100% Bepul va Cheksiz\n"
-        "🛡️ <b>Ishlash Rejimi:</b> 24/7 To'xtovsiz (Bulutli Cloud)\n\n"
-        "<i>Har bir kuningiz bayramona quvonch va tabassumga to'lsin! 🎁</i>"
-    )
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="👤 Muallif Bilan Bog'lanish", url="https://t.me/wenzone72")],
-            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]
-        ]
-    )
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    await call.answer()
-
-@router.callback_query(F.data == "server_status")
-async def server_status_handler(call: CallbackQuery):
-    uptime_sec = int(time.time() - START_TIME)
-    hours, remainder = divmod(uptime_sec, 3600)
-    minutes, seconds = divmod(remainder, 60)
     
-    stats = await database.get_statistics()
+    ans_list = [data.get("ans1", "boyvachcha"), data.get("ans2", "boyvachcha"), chosen_char]
+    # Eng ko'p tanlangan personajni topish
+    final_char = max(set(ans_list), key=ans_list.count)
+    result_info = QUIZ_RESULTS.get(final_char, QUIZ_RESULTS["boyvachcha"])
     
-    status_text = (
-        "<b>⚡ Bulutli Server Holati:</b>\n\n"
-        "🟢 <b>Status:</b> 24/7 Onlayn (Active)\n"
-        f"⏱ <b>Uptime:</b> {hours} soat, {minutes} daqiqa, {seconds} soniya\n"
-        f"👥 <b>Bazada jami foydalanuvchilar:</b> {stats['total_users']} ta\n"
-        f"🎁 <b>Yaratilgan jami tabriklar:</b> {stats['total_greetings']} ta\n"
-        f"📢 <b>Kanal Monitoringi:</b> {config.CHANNEL_ID} (Faol)\n"
-        "🛡️ <b>Crash-Proof Watchdog:</b> Faol\n"
-        "💤 <b>Anti-Sleep Pinger:</b> Faol\n\n"
-        "<i>Server noutbukingiz o'chiq bo'lsa ham 24/7 to'xtovsiz ishlaydi!</i>"
+    # Testni tugatgani uchun +5 ball bonus!
+    await database.add_user_points(call.from_user.id, 5, "Viktorina testi yakunlandi")
+    
+    share_text = (
+        f"🧠 Men 'Parodiya Tabrik Boti'da testdan o'tdim va natijam: {result_info['title']} {result_info['icon']} bo'lib chiqdi!\n\n"
+        "Sen kimsan? O'zingni tekshirib ko'r: 👇\n"
+        f"https://t.me/parodiya_tabrik_uzbot?start=ref_{call.from_user.id}"
     )
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]]
+    encoded_share = urllib.parse.quote(share_text)
+    share_url = f"https://t.me/share/url?url={encoded_share}"
+    
+    res_text = (
+        "🎉 <b>TEST NATIJANGIZ TAYYOR!</b>\n\n"
+        f"<b>{result_info['title']}</b> {result_info['icon']}\n\n"
+        f"📝 <i>{result_info['desc']}</i>\n\n"
+        "⭐️ <i>Sizga testni bajarganingiz uchun <b>+5 ball</b> berildi!</i>"
     )
-    await call.message.edit_text(status_text, parse_mode="HTML", reply_markup=kb)
-    await call.answer()
-
-@router.callback_query(F.data == "ads_partnership")
-async def ads_partnership_handler(call: CallbackQuery):
-    await database.log_activity(
-        user_id=call.from_user.id,
-        username=call.from_user.username,
-        full_name=call.from_user.full_name,
-        action="VIEW_ADS",
-        details="Reklama va hamkorlik bo'limini ko'rdi"
-    )
-    text = (
-        "<b>🤝 Reklama va Hamkorlik Bo'limi</b> 📢\n\n"
-        "Botingiz va kanallaringiz auditoriyasini biz bilan birga kengaytiring! "
-        "Biz quyidagi yo'nalishlarda hamkorlik qilishga tayyormiz:\n\n"
-        "📌 <b>Taklif Qilinadigan Xizmatlar:</b>\n"
-        "• <b>Majburiy Obuna (OP):</b> Kanalingizga jonli, faol va real o'zbek auditoriyasini jalb qilish.\n"
-        "• <b>Xabarnoma (Rassilka):</b> Botning barcha foydalanuvchilariga reklama xabaringizni yuborish.\n"
-        "• <b>Tugmali Integratsiya:</b> Bot ichidagi tabriklar va menyularda maxsus reklama havolalari joylashtirish.\n"
-        "• <b>O'zaro Hamkorlik (VP):</b> Boshqa bot va kanallar bilan do'stona almashinuv.\n\n"
-        f"👑 <b>Reklama Bo'yicha Mas'ul:</b> {config.CREATOR_USERNAME}\n\n"
-        "<i>Batafsil ma'lumot va narxlar bo'yicha pastdagi tugma orqali murojaat qiling:</i>"
-    )
+    
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💬 Adminga Yozish (@wenzone72)", url="https://t.me/wenzone72")],
-            [InlineKeyboardButton(text="📢 Rasmiy Kanalimiz", url=config.CHANNEL_URL)],
-            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
+            [
+                InlineKeyboardButton(text="📲 Do'stlarga Ulashish: Sen kimsan?", url=share_url)
+            ],
+            [
+                InlineKeyboardButton(text="🔄 Qayta Topshirish", callback_data="start_quiz"),
+                InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
+            ]
         ]
     )
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await call.message.edit_text(res_text, parse_mode="HTML", reply_markup=kb)
     await call.answer()
 
-# --- TABRIK VA MATN YARATISH BOSQICHLARI (FSM) ---
+# -------------------------------------------------------------
+# 9. RASMIY PARODIYA SERTIFIKAT VA DIPLOM GENERATORI
+# -------------------------------------------------------------
+@router.message(Command("certificate"))
+@router.callback_query(F.data == "start_cert")
+async def start_cert_handler(event: TelegramObject, state: FSMContext):
+    await state.clear()
+    await state.set_state(CertificateForm.choosing_type)
+    
+    text = (
+        "📜 <b>«Rasmiy Parodiya Sertifikat & Diplom» Generatori!</b>\n\n"
+        "Yaqiningiz yoki do'stingizga qaysi unvonda rasmiy sertifikat sovg'a qilmoqchisiz?"
+    )
+    buttons = []
+    for key, c in CERTIFICATES.items():
+        buttons.append([InlineKeyboardButton(text=f"{c['icon']} {c['title']}", callback_data=f"cert_type_{key}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await event.answer()
+    elif isinstance(event, Message):
+        await event.answer(text, parse_mode="HTML", reply_markup=kb)
 
+@router.callback_query(CertificateForm.choosing_type, F.data.startswith("cert_type_"))
+async def cert_type_chosen(call: CallbackQuery, state: FSMContext):
+    cert_key = call.data.replace("cert_type_", "")
+    await state.update_data(cert_key=cert_key)
+    await state.set_state(CertificateForm.entering_recipient)
+    
+    cert_info = CERTIFICATES.get(cert_key, {})
+    text = (
+        f"Tanlangan diplom: <b>{cert_info.get('title')}</b> {cert_info.get('icon')}\n\n"
+        "✍️ <b>Ushbu rasmiy sertifikat kimning nomiga rasmiylashtiriladi?</b>\n"
+        "Do'stingizning yoki yaqiningizning <b>Ismini</b> yozib yuboring:\n"
+        "<i>(Masalan: Jasurbek, Nodira, Sherzod)</i>"
+    )
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")]]
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=cancel_kb)
+    await call.answer()
+
+@router.message(CertificateForm.entering_recipient)
+async def cert_recipient_entered(message: Message, state: FSMContext):
+    raw_name = message.text.strip()
+    if len(raw_name) > 40:
+        await message.answer("Iltimos, ismni qisqaroq kiriting (maksimal 40 harf):")
+        return
+    
+    clean_name = html.escape(raw_name)
+    await state.update_data(recipient_name=clean_name)
+    await state.set_state(CertificateForm.entering_sender)
+    
+    text = (
+        f"Ajoyib! Demak sertifikat <b>{clean_name}</b> nomiga bo'ladi.\n\n"
+        "✍️ <b>Endi o'z ismingizni yoki kim taqdim etayotganini yozing:</b>\n"
+        "<i>(Masalan: Do'stingiz Farhod, Kursdoshlar, Jamoa)</i>"
+    )
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Bekor qilish", callback_data="back_to_menu")]]
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=cancel_kb)
+
+@router.message(CertificateForm.entering_sender)
+async def cert_sender_entered(message: Message, state: FSMContext):
+    raw_sender = message.text.strip()
+    if len(raw_sender) > 50:
+        await message.answer("Iltimos, ismni qisqaroq kiriting (maksimal 50 harf):")
+        return
+        
+    sender_name = html.escape(raw_sender)
+    data = await state.get_data()
+    await state.clear()
+    
+    cert_key = data.get("cert_key", "boyvachcha")
+    recipient_name = data.get("recipient_name", "Do'stim")
+    
+    cert_text = generate_certificate_text(cert_key, recipient_name, sender_name)
+    
+    # Foydalanuvchiga +2 ball beriladi!
+    await database.add_user_points(message.from_user.id, 2, "Sertifikat yaratildi")
+    
+    encoded_cert = urllib.parse.quote(cert_text)
+    share_url = f"https://t.me/share/url?url=https://t.me/parodiya_tabrik_uzbot&text={encoded_cert}"
+    
+    res_display = (
+        "🎉 <b>Rasmiy Parodiya Sertifikati Tayyor Bo'ldi!</b>\n\n"
+        "📋 <i>Quyidagi sertifikat ustiga 1 marta bosib nusxa oling yoki to'g'ridan-to'g'ri ulashing:</i>\n\n"
+        f"<pre><code class=\"language-text\">{cert_text}</code></pre>\n\n"
+        "⭐️ <i>Sizga sertifikat yaratganingiz uchun <b>+2 ball</b> berildi!</i>"
+    )
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📲 Sertifikatni Do'stga Ulashish", url=share_url)
+            ],
+            [
+                InlineKeyboardButton(text="📜 Yana Boshqa Sertifikat", callback_data="start_cert"),
+                InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
+            ]
+        ]
+    )
+    await message.answer(res_display, parse_mode="HTML", reply_markup=kb)
+
+# -------------------------------------------------------------
+# 10. TAVAKKAL OMAD BARABANI (ROULETTE)
+# -------------------------------------------------------------
+@router.message(Command("roulette"))
+@router.callback_query(F.data == "roulette_spin")
+async def roulette_spin_handler(event: TelegramObject):
+    spin_msg_text = "🎰 <b>Omad Barabani aylanmoqda...</b>\n🍒 🍋 💎 7️⃣ 🔔..."
+    
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(spin_msg_text, parse_mode="HTML")
+        await event.answer()
+        target_message = event.message
+    else:
+        target_message = await event.answer(spin_msg_text, parse_mode="HTML")
+        
+    await asyncio.sleep(1.2)
+    
+    roulette_data = generate_random_roulette()
+    await database.add_user_points(event.from_user.id, 1, "Omad barabani aylantirildi")
+    
+    res_text = (
+        f"🎉 <b>DJЕКPOT! BARABAN TO'XTADI!</b> {roulette_data['icon']}\n\n"
+        f"🎭 <b>Tasodifiy Personaj:</b> {roulette_data['character']}\n\n"
+        f"<pre><code class=\"language-text\">{roulette_data['text']}</code></pre>\n\n"
+        "⭐️ <i>Sizga omad barabani uchun <b>+1 ball</b> berildi!</i>"
+    )
+    
+    share_content = (
+        f"{roulette_data['text']}\n\n"
+        "🎰 Bepul parodiya va baraban: @parodiya_tabrik_uzbot"
+    )
+    encoded_share = urllib.parse.quote(share_content)
+    share_url = f"https://t.me/share/url?url=https://t.me/parodiya_tabrik_uzbot&text={encoded_share}"
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📲 Do'stga Ulashish", url=share_url)
+            ],
+            [
+                InlineKeyboardButton(text="🔄 Yana Bir Bor Aylantirish", callback_data="roulette_spin"),
+                InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
+            ]
+        ]
+    )
+    await target_message.edit_text(res_text, parse_mode="HTML", reply_markup=kb)
+
+# -------------------------------------------------------------
+# 11. KUNLIK KULGILI BASHORAT (GOROSKOP)
+# -------------------------------------------------------------
+@router.message(Command("fortune"))
+@router.callback_query(F.data == "daily_fortune")
+async def daily_fortune_handler(event: TelegramObject):
+    user = event.from_user
+    can_claim = await database.can_claim_daily_fortune(user.id)
+    fortune_text = get_daily_fortune(user.id)
+    
+    if can_claim:
+        await database.claim_daily_fortune(user.id)
+        bonus_notice = "⭐️ <b>Bugungi faollik uchun sizga +1 ball berildi! 🎁</b>\nErtaga yangi bashorat olish uchun yana kiring!"
+    else:
+        bonus_notice = "ℹ️ <i>Siz bugungi kunlik bashorat va ballingizni olgansiz. Yangi bashorat ertaga yangilanadi!</i>"
+        
+    full_text = (
+        "🔮 <b>Bugungi Kulgili Parodiya Bashoratingiz:</b>\n\n"
+        f"{fortune_text}\n\n"
+        f"{bonus_notice}"
+    )
+    
+    share_content = (
+        f"{fortune_text}\n\n"
+        "🔮 Sizning bugungi bashoratingiz qanday? Botga kirib bilib oling: @parodiya_tabrik_uzbot"
+    )
+    encoded_share = urllib.parse.quote(share_content)
+    share_url = f"https://t.me/share/url?url=https://t.me/parodiya_tabrik_uzbot&text={encoded_share}"
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📲 Bashoratni Do'stlarga Ulashish", url=share_url)
+            ],
+            [
+                InlineKeyboardButton(text="👤 Mening Profilim", callback_data="my_profile"),
+                InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")
+            ]
+        ]
+    )
+    
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(full_text, parse_mode="HTML", reply_markup=kb)
+        await event.answer()
+    elif isinstance(event, Message):
+        await event.answer(full_text, parse_mode="HTML", reply_markup=kb)
+
+# -------------------------------------------------------------
+# 12. TABRIK VA MATN YARATISH BOSQICHLARI (FSM)
+# -------------------------------------------------------------
 @router.callback_query(F.data == "start_create")
 async def start_create_handler(call: CallbackQuery, state: FSMContext):
     await state.set_state(GreetingForm.choosing_category)
@@ -758,7 +984,7 @@ async def sender_entered_handler(message: Message, state: FSMContext):
         sender_name=sender_name
     )
     
-    # Bazaga tabrikni saqlash va hisoblagichni oshirish
+    # Bazaga tabrikni saqlash (+2 ball beriladi)
     await database.save_greeting(
         user_id=message.from_user.id,
         category=category,
@@ -783,7 +1009,8 @@ async def sender_entered_handler(message: Message, state: FSMContext):
     result_text = (
         "🎉 <b>Eksklyuziv Matn Tayyor Bo'ldi!</b>\n\n"
         "📋 <i>Quyidagi matnning burchagidagi <b>«Copy»</b> tugmasini bosib (yoki matn ustiga 1 marta bosib) nusxalab oling:</i>\n\n"
-        f"<pre><code class=\"language-text\">{generated_text}</code></pre>"
+        f"<pre><code class=\"language-text\">{generated_text}</code></pre>\n\n"
+        "⭐️ <i>Sizga tabrik yaratganingiz uchun <b>+2 ball</b> berildi!</i>"
     )
     
     share_caption = (
@@ -798,6 +1025,240 @@ async def sender_entered_handler(message: Message, state: FSMContext):
         reply_markup=get_result_keyboard(f"{recipient_name} uchun eksklyuziv xabar!", share_caption)
     )
 
+# -------------------------------------------------------------
+# 13. MENING TABRIKLARIM, BUYRUQLAR VA INLINE QUERY
+# -------------------------------------------------------------
+@router.message(Command("mygreetings"))
+@router.callback_query(F.data == "my_greetings")
+async def my_greetings_handler(event: TelegramObject):
+    user = event.from_user
+    greetings = await database.get_user_greetings(user.id, limit=5)
+    
+    if not greetings:
+        text = (
+            "📂 <b>Siz hali birorta ham tabrik yaratmadingiz!</b>\n\n"
+            "Do'stlaringiz va yaqinlaringiz uchun birinchi ajoyib tabrikni yaratish uchun "
+            "quyidagi tugmani bosing:"
+        )
+    else:
+        text = f"📂 <b>Siz yaratgan oxirgi {len(greetings)} ta tabrik:</b>\n\n"
+        for idx, g in enumerate(greetings, 1):
+            char_info = CHARACTERS.get(g['character'], {})
+            char_name = char_info.get('name', g['character'])
+            preview_snippet = html.escape(g['generated_text'][:100])
+            text += (
+                f"<b>{idx}. {html.escape(g['recipient_name'])} uchun</b> ({char_name})\n"
+                f"📅 <i>{g['created_at']}</i>\n"
+                f"💬 <code>{preview_snippet}...</code>\n"
+                "──────────────────\n"
+            )
+    
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎭 Yangi Tabrik Yaratish", callback_data="start_create")],
+            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
+        ]
+    )
+    
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await event.answer()
+    elif isinstance(event, Message):
+        await event.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    help_text = (
+        "📖 <b>«Parodiya Tabrik Boti» Qo'llanmasi:</b>\n\n"
+        "1️⃣ <b>Tabrik yaratish:</b> <b>«🎭 Tabrik Yaratish»</b> tugmasi orqali do'stingizga kulgili qutlov tayyorlang.\n"
+        "2️⃣ <b>Qaysi personajsan?</b> 3 ta savolli testdan o'tib, o'zingizning kimligingizni bilib oling va do'stlarga ulashing!\n"
+        "3️⃣ <b>Parodiya Diplom:</b> Do'stingizga 'Yil Boyvachchasi' yoki 'Yil Taksisti' sertifikatini sovg'a qiling!\n"
+        "4️⃣ <b>Omad Barabani:</b> Birgina bosishda tasodifiy kutilmagan parodiya oling!\n"
+        "5️⃣ <b>Ballar & Unvonlar:</b> Do'stlaringizni taklif qilib har biridan <b>+10 ball</b> oling va VIP unvonga ko'tariling!\n\n"
+        "📌 <b>Mavjud buyruqlar:</b>\n"
+        "• <code>/start</code> — Asosiy menyu\n"
+        "• <code>/profile</code> — Sizning profilingiz va ballaringiz\n"
+        "• <code>/top</code> — Top 10 peshqadamlar\n"
+        "• <code>/quiz</code> — 'Qaysi personajsan?' testi\n"
+        "• <code>/certificate</code> — Rasmiy parodiya diplom generatori\n"
+        "• <code>/roulette</code> — Omad barabani\n"
+        "• <code>/fortune</code> — Kunlik kulgili bashorat\n"
+        "• <code>/mygreetings</code> — Oxirgi yaratgan tabriklaringiz\n"
+        "• <code>/cancel</code> — Joriy amalni bekor qilish\n"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎭 Tabrik Yaratish", callback_data="start_create")],
+            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
+        ]
+    )
+    await message.answer(help_text, parse_mode="HTML", reply_markup=kb)
+
+@router.message(Command("characters"))
+async def cmd_characters(message: Message):
+    text = (
+        "🌟 <b>Mavjud Barcha 8 ta Personaj (100% Bepul):</b>\n\n"
+        "1. 💰 <b>Saxiy Boyvachcha Otaxon</b> — Dollar sochadigan saxiy millioner\n"
+        "2. 👮 <b>Katta Leytenant (GAI)</b> — Qat'iy protokol va jarima hazillari\n"
+        "3. 🍏 <b>Malika Savdogari</b> — O'rikzor va Malikaning chaqqon savdogari\n"
+        "4. 📜 <b>Xalq Donishmandi & Shoir Bobo</b> — Kulgili va falsafiy baytlar\n"
+        "5. 🕶️ <b>Xorijdagi Shef (Don Karleone)</b> — Jiddiy va katta doiradagi mafioz biznesmen\n"
+        "6. 🚕 <b>Toshkent Taksisti (Aka)</b> — 'Bratan, propkada qoldim' uslubidagi taksist\n"
+        "7. 🎓 <b>Charchagan Talaba (Sessiya Qurboni)</b> — Doshirak va stipendiya orzusidagi talaba\n"
+        "8. 🧕 <b>Hazilkash Qaynona & Kelin</b> — Mahalla va qaynona-kelin hazillari\n\n"
+        "<i>Barchasi 100% bepul va cheksiz foydalanish uchun ochiq!</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎭 Tabrik Yaratish", callback_data="start_create")],
+            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
+        ]
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await database.log_activity(
+        user_id=message.from_user.id,
+        username=message.from_user.username,
+        full_name=message.from_user.full_name,
+        action="CANCEL",
+        details="Amalni bekor qildi (/cancel)"
+    )
+    await message.answer("❌ Harakat bekor qilindi. Asosiy menyudasiz:", reply_markup=get_main_menu_keyboard(message.from_user.id))
+
+@router.callback_query(F.data == "back_to_menu")
+async def back_to_menu_handler(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await database.log_activity(
+        user_id=call.from_user.id,
+        username=call.from_user.username,
+        full_name=call.from_user.full_name,
+        action="MENU",
+        details="Bosh menyuga qaytdi"
+    )
+    await call.message.edit_text(
+        "Asosiy menyudasiz. Qaysi bo'limdan foydalanamiz?",
+        reply_markup=get_main_menu_keyboard(call.from_user.id)
+    )
+    await call.answer()
+
+@router.callback_query(F.data == "all_characters")
+async def all_characters_handler(call: CallbackQuery):
+    await database.log_activity(
+        user_id=call.from_user.id,
+        username=call.from_user.username,
+        full_name=call.from_user.full_name,
+        action="VIEW_CHARACTERS",
+        details="Personajlar ro'yxatini ko'rdi"
+    )
+    text = (
+        "🌟 <b>Mavjud Barcha 8 ta Personaj (100% Bepul):</b>\n\n"
+        "1. 💰 <b>Saxiy Boyvachcha Otaxon</b> — Dollar sochadigan saxiy millioner\n"
+        "2. 👮 <b>Katta Leytenant (GAI)</b> — Qat'iy nazorat va protokol hazillari\n"
+        "3. 🍏 <b>Malika Savdogari</b> — O'rikzor va Malikaning chaqqon savdogari\n"
+        "4. 📜 <b>Xalq Donishmandi & Shoir</b> — Qofiyali, kulgili va falsafiy baytlar\n"
+        "5. 🕶️ <b>Xorijdagi Shef (Don Karleone)</b> — Jiddiy va katta doiradagi nufuzli biznesmen\n"
+        "6. 🚕 <b>Toshkent Taksisti</b> — Poytaxt probkasi va hayotiy hazillar ustasi\n"
+        "7. 🎓 <b>Charchagan Talaba</b> — Sessiya, stipendiya va yotoqxona romantikasi\n"
+        "8. 🧕 <b>Hazilkash Qaynona & Kelin</b> — Mahalla va to'y-marosimlar hazili\n\n"
+        "<i>Barcha personajlardan cheksiz va bepul foydalanishingiz mumkin!</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎭 Tabrik Yaratish", callback_data="start_create")],
+            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]
+        ]
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data == "about_bot")
+async def about_bot_handler(call: CallbackQuery):
+    await database.log_activity(
+        user_id=call.from_user.id,
+        username=call.from_user.username,
+        full_name=call.from_user.full_name,
+        action="VIEW_ABOUT",
+        details="Bot haqida bo'limini ko'rdi"
+    )
+    text = (
+        "<b>🎭 «Parodiya Tabrik & Qutlovlar» Boti</b>\n\n"
+        "Yaqinlaringiz va do'stlaringizga O'zbekistonning eng mashhur personajlari "
+        "tilida eksklyuziv, kulgili va unutilmas tabriklar ulashuvchi 100% bepul bot! ✨\n\n"
+        f"👑 <b>Loyiha Muallifi:</b> {config.CREATOR_USERNAME}\n"
+        f"📢 <b>Rasmiy Kanal:</b> {config.CHANNEL_ID}\n"
+        "⚡ <b>Xizmat:</b> 100% Bepul va Cheksiz\n"
+        "🛡️ <b>Ishlash Rejimi:</b> 24/7 To'xtovsiz (Bulutli Cloud)\n\n"
+        "<i>Har bir kuningiz bayramona quvonch va tabassumga to'lsin! 🎁</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="👤 Muallif Bilan Bog'lanish", url="https://t.me/wenzone72")],
+            [InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]
+        ]
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data == "server_status")
+async def server_status_handler(call: CallbackQuery):
+    uptime_sec = int(time.time() - START_TIME)
+    hours, remainder = divmod(uptime_sec, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    stats = await database.get_statistics()
+    
+    status_text = (
+        "<b>⚡ Bulutli Server Holati:</b>\n\n"
+        "🟢 <b>Status:</b> 24/7 Onlayn (Active)\n"
+        f"⏱ <b>Uptime:</b> {hours} soat, {minutes} daqiqa, {seconds} soniya\n"
+        f"👥 <b>Bazada jami foydalanuvchilar:</b> {stats['total_users']} ta\n"
+        f"🎁 <b>Yaratilgan jami tabriklar:</b> {stats['total_greetings']} ta\n"
+        f"⭐️ <b>Foydalanuvchilar jami ballari:</b> {stats.get('total_points', 0)} ball\n"
+        f"📢 <b>Kanal Monitoringi:</b> {config.CHANNEL_ID} (Faol)\n"
+        "🛡️ <b>Crash-Proof Watchdog:</b> Faol\n"
+        "💤 <b>Anti-Sleep Pinger:</b> Faol\n\n"
+        "<i>Server noutbukingiz o'chiq bo'lsa ham 24/7 to'xtovsiz ishlaydi!</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Orqaga", callback_data="back_to_menu")]]
+    )
+    await call.message.edit_text(status_text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data == "ads_partnership")
+async def ads_partnership_handler(call: CallbackQuery):
+    await database.log_activity(
+        user_id=call.from_user.id,
+        username=call.from_user.username,
+        full_name=call.from_user.full_name,
+        action="VIEW_ADS",
+        details="Reklama va hamkorlik bo'limini ko'rdi"
+    )
+    text = (
+        "<b>🤝 Reklama va Hamkorlik Bo'limi</b> 📢\n\n"
+        "Botingiz va kanallaringiz auditoriyasini biz bilan birga kengaytiring! "
+        "Biz quyidagi yo'nalishlarda hamkorlik qilishga tayyormiz:\n\n"
+        "📌 <b>Taklif Qilinadigan Xizmatlar:</b>\n"
+        "• <b>Majburiy Obuna (OP):</b> Kanalingizga jonli, faol va real o'zbek auditoriyasini jalb qilish.\n"
+        "• <b>Xabarnoma (Rassilka):</b> Botning barcha foydalanuvchilariga reklama xabaringizni yuborish.\n"
+        "• <b>Tugmali Integratsiya:</b> Bot ichidagi tabriklar va menyularda maxsus reklama havolalari joylashtirish.\n"
+        "• <b>O'zaro Hamkorlik (VP):</b> Boshqa bot va kanallar bilan do'stona almashinuv.\n\n"
+        f"👑 <b>Reklama Bo'yicha Mas'ul:</b> {config.CREATOR_USERNAME}\n\n"
+        "<i>Batafsil ma'lumot va narxlar bo'yicha pastdagi tugma orqali murojaat qiling:</i>"
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💬 Adminga Yozish (@wenzone72)", url="https://t.me/wenzone72")],
+            [InlineKeyboardButton(text="📢 Rasmiy Kanalimiz", url=config.CHANNEL_URL)],
+            [InlineKeyboardButton(text="🔙 Bosh menyu", callback_data="back_to_menu")]
+        ]
+    )
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await call.answer()
+
 @router.inline_query()
 async def inline_query_handler(query: InlineQuery):
     raw_text = query.query.strip()
@@ -808,9 +1269,8 @@ async def inline_query_handler(query: InlineQuery):
         ("boyvachcha", "Saxiy Boyvachcha Otaxon", "💰"),
         ("taksist", "Toshkent Taksisti", "🚕"),
         ("talaba", "Charchagan Talaba", "🎓"),
-        ("qaynona", "Hazilkash Qaynona", "🧕"),
-        ("gai", "Katta Leytenant (GAI)", "👮"),
         ("savdogar", "Malika Savdogari", "🍏"),
+        ("gai", "Katta Leytenant (GAI)", "👮"),
         ("mafioz", "Don Karleone (Shef)", "🕶️"),
         ("shoir", "Shoir Bobo", "📜")
     ]
@@ -836,9 +1296,8 @@ async def inline_query_handler(query: InlineQuery):
     await query.answer(results, cache_time=10, is_personal=True)
 
 # -------------------------------------------------------------
-# 7. ADMIN PANEL (FAQAT ID: 6268220201 UCHUN)
+# 14. ADMIN PANEL (FAQAT ID: 6268220201 UCHUN)
 # -------------------------------------------------------------
-
 @router.message(Command("admin"))
 async def cmd_admin(message: Message, state: FSMContext):
     if not config.is_admin(message.from_user.id):
@@ -851,6 +1310,7 @@ async def cmd_admin(message: Message, state: FSMContext):
         f"🆔 <b>Admin ID:</b> <code>{message.from_user.id}</code>\n"
         f"👥 <b>Jami foydalanuvchilar:</b> {stats['total_users']} ta\n"
         f"🎁 <b>Yaratilgan tabriklar:</b> {stats['total_greetings']} ta\n"
+        f"⭐️ <b>Tarqatilgan jami ballar:</b> {stats.get('total_points', 0)} ball\n"
         f"📜 <b>Qayd etilgan harakatlar:</b> {stats['total_logs']} ta\n"
         f"⛔ <b>Bloklanganlar:</b> {stats['banned_users']} ta\n\n"
         "Quyidagi bo'limlardan birini tanlang:"
@@ -899,6 +1359,7 @@ async def admin_panel_callback(call: CallbackQuery, state: FSMContext):
         f"🆔 <b>Admin ID:</b> <code>{call.from_user.id}</code>\n"
         f"👥 <b>Jami foydalanuvchilar:</b> {stats['total_users']} ta\n"
         f"🎁 <b>Yaratilgan tabriklar:</b> {stats['total_greetings']} ta\n"
+        f"⭐️ <b>Tarqatilgan jami ballar:</b> {stats.get('total_points', 0)} ball\n"
         f"📜 <b>Qayd etilgan harakatlar:</b> {stats['total_logs']} ta\n"
         f"⛔ <b>Bloklanganlar:</b> {stats['banned_users']} ta\n\n"
         "Quyidagi bo'limlardan birini tanlang:"
@@ -925,6 +1386,7 @@ async def admin_stats_callback(call: CallbackQuery):
         f"🔥 <b>Bugun faol bo'lganlar:</b> {stats['active_today']} ta\n\n"
         f"🎁 <b>Jami yaratilgan tabriklar:</b> {stats['total_greetings']} ta\n"
         f"📅 <b>Bugungi yaratilgan tabriklar:</b> {stats['today_greetings']} ta\n\n"
+        f"⭐️ <b>Jami berilgan ballar:</b> {stats.get('total_points', 0)} ball\n"
         f"📜 <b>Jami kuzatilgan amallar:</b> {stats['total_logs']} ta\n"
         f"⛔ <b>Bloklangan foydalanuvchilar:</b> {stats['banned_users']} ta\n"
         f"⏱ <b>Server Uptime:</b> {hours} soat, {minutes} daqiqa, {seconds} soniya\n"
@@ -944,7 +1406,6 @@ async def admin_rankings_callback(call: CallbackQuery):
     
     text = "🏆 <b>Eng Ommabop Reytinglar (Top Tanlovlar):</b>\n\n"
     
-    # 1. Top personajlar
     text += "🎭 <b>Eng Ko'p Tanlangan Personajlar:</b>\n"
     if top_stats["top_characters"]:
         for idx, c in enumerate(top_stats["top_characters"], 1):
@@ -955,7 +1416,6 @@ async def admin_rankings_callback(call: CallbackQuery):
         text += "<i>Hali tabriklar yaratilmagan.</i>\n"
     text += "\n"
 
-    # 2. Top kasblar
     text += "💼 <b>Eng Ko'p Tanlangan Kasblar:</b>\n"
     if top_stats["top_professions"]:
         for idx, p in enumerate(top_stats["top_professions"], 1):
@@ -965,7 +1425,6 @@ async def admin_rankings_callback(call: CallbackQuery):
         text += "<i>Hali kasblar tanlanmagan.</i>\n"
     text += "\n"
 
-    # 3. Top referrers
     text += "👥 <b>Eng Ko'p Do'st Taklif Qilganlar:</b>\n"
     if top_stats["top_referrers"]:
         for idx, r in enumerate(top_stats["top_referrers"], 1):
@@ -988,7 +1447,6 @@ async def admin_cleanup_callback(call: CallbackQuery):
 
 @router.callback_query(F.data == "admin_logs")
 async def admin_logs_callback(call: CallbackQuery):
-    """Oxirgi 15 ta jonli harakatlar jurnali (Kim kirib nima qilyapti)."""
     if not config.is_admin(call.from_user.id):
         await call.answer("❌ Ruxsat yo'q!", show_alert=True)
         return
@@ -1015,7 +1473,6 @@ async def admin_logs_callback(call: CallbackQuery):
 
 @router.callback_query(F.data == "admin_users")
 async def admin_users_callback(call: CallbackQuery):
-    """Oxirgi faol 10 ta foydalanuvchi ma'lumotlari."""
     if not config.is_admin(call.from_user.id):
         await call.answer("❌ Ruxsat yo'q!", show_alert=True)
         return
@@ -1032,9 +1489,10 @@ async def admin_users_callback(call: CallbackQuery):
             lname = u.get("last_name") or ""
             full_name = html.escape(f"{fname} {lname}".strip() or "Noma'lum")
             ban_badge = " [⛔ BLOKLANGAN]" if u.get("is_banned") else ""
+            pts = u.get("points", 0)
             text += (
                 f"<b>{idx}. {full_name}</b> ({uname}){ban_badge}\n"
-                f"🆔 ID: <code>{u['user_id']}</code>\n"
+                f"🆔 ID: <code>{u['user_id']}</code> | ⭐️ Ballar: <b>{pts}</b>\n"
                 f"📅 Qo'shilgan: {u['created_at']}\n"
                 f"⚡ Oxirgi faollik: {u['last_active']}\n"
                 f"🎁 Yaratgan tabriklari: <b>{u['greetings_count']} ta</b>\n"
@@ -1088,13 +1546,16 @@ async def admin_search_user_result(message: Message, state: FSMContext):
     full_name = html.escape(f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip() or "Noma'lum")
     is_banned = bool(user_info.get("is_banned"))
     utm_source_label = user_info.get("utm_source", "") or "To'g'ridan-to'g'ri"
+    pts = user_info.get("points", 0)
     
     report = (
         f"👤 <b>Foydalanuvchi Profili:</b>\n\n"
         f"🆔 <b>ID:</b> <code>{user_info['user_id']}</code>\n"
         f"📝 <b>Ism-familiya:</b> {full_name}\n"
         f"🌐 <b>Username:</b> {uname}\n"
+        f"⭐️ <b>Ballar:</b> <b>{pts} ball</b>\n"
         f"⛔ <b>Holati:</b> {'Bloklangan' if is_banned else 'Faol'}\n"
+        f"👥 <b>Taklif qilgan do'stlari:</b> <code>{user_info.get('ref_count', 0)} ta</code>\n"
         f"👥 <b>Taklif qilgan ID:</b> <code>{user_info.get('referrer_id', 0)}</code>\n"
         f"🎯 <b>UTM Manba:</b> <code>{utm_source_label}</code>\n"
         f"📅 <b>Birinchi kirgan:</b> {user_info['created_at']}\n"
@@ -1296,7 +1757,7 @@ async def admin_export_callback(call: CallbackQuery, bot: Bot):
                 pass
 
 # -------------------------------------------------------------
-# 8. KEEP-ALIVE AIOHTTP VEB-SERVER (Render talabi)
+# 15. KEEP-ALIVE AIOHTTP VEB-SERVER (Render talabi)
 # -------------------------------------------------------------
 async def handle_root(request: web.Request) -> web.Response:
     stats = await database.get_statistics()
@@ -1327,7 +1788,7 @@ def create_web_server() -> web.Application:
     return app
 
 # -------------------------------------------------------------
-# 9. CRASH-PROOF BOT WATCHDOG SIKLI
+# 16. CRASH-PROOF BOT WATCHDOG SIKLI
 # -------------------------------------------------------------
 async def run_bot_polling_watchdog(bot: Bot, dp: Dispatcher):
     retry_delay = 5
@@ -1375,12 +1836,11 @@ async def auto_backup_loop(bot: Bot):
             logger.warning(f"Avtomatik backupda xatolik: {e}")
 
 # -------------------------------------------------------------
-# 10. ASOSIY ENTRYPOINT (MAIN SIKL)
+# 17. ASOSIY ENTRYPOINT (MAIN SIKL)
 # -------------------------------------------------------------
 async def main():
     logger.info("🚀 Ilova ishga tushirilmoqda...")
 
-    # 0. Ma'lumotlar bazasini ishga tushirish
     await database.init_db()
     logger.info("📦 SQLite Ma'lumotlar bazasi muvaffaqiyatli ishga tushirildi.")
 
@@ -1394,10 +1854,15 @@ async def main():
     try:
         await bot.set_my_commands([
             BotCommand(command="start", description="🚀 Asosiy menyu"),
-            BotCommand(command="help", description="📖 Qo'llanma"),
-            BotCommand(command="characters", description="🌟 Barcha 8 ta personaj"),
+            BotCommand(command="profile", description="🏆 Ballarim va Profilim"),
+            BotCommand(command="top", description="🥇 Top 10 Peshqadamlar"),
+            BotCommand(command="quiz", description="🧠 Qaysi personajsan? (Test)"),
+            BotCommand(command="certificate", description="📜 Parodiya Diplom generator"),
+            BotCommand(command="roulette", description="🎲 Omad barabani"),
+            BotCommand(command="fortune", description="🔮 Kunlik kulgili bashorat"),
             BotCommand(command="mygreetings", description="📂 Mening tabriklarim"),
-            BotCommand(command="cancel", description="❌ Amalni bekor qilish"),
+            BotCommand(command="help", description="📖 Qo'llanma"),
+            BotCommand(command="cancel", description="❌ Bekor qilish")
         ])
         logger.info("✅ Telegram menyu buyruqlari muvaffaqiyatli o'rnatildi.")
     except Exception as e:
@@ -1407,7 +1872,6 @@ async def main():
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
 
-    # 1. aiohttp Veb-Serverini ishga tushirish
     app = create_web_server()
     runner = web.AppRunner(app)
     await runner.setup()
@@ -1418,10 +1882,8 @@ async def main():
     logger.info(f"📢 Majburiy kanal a'zoligi faol: {config.CHANNEL_ID}")
     logger.info(f"👑 Boshqaruvchi Admin ID: {config.ADMIN_ID}")
 
-    # 2. Avtomatik 24 soatlik zaxiralash fon vazifasi
     backup_task = asyncio.create_task(auto_backup_loop(bot))
 
-    # 3. Crash-proof Bot Watchdog Pollingni ishga tushirish
     try:
         await run_bot_polling_watchdog(bot, dp)
     finally:

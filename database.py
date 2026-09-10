@@ -4,7 +4,7 @@ import csv
 import os
 import sqlite3
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_database.sqlite")
 
@@ -31,11 +31,12 @@ def _init_db_sync():
                 greetings_count INTEGER DEFAULT 0,
                 is_banned INTEGER DEFAULT 0,
                 referrer_id INTEGER DEFAULT 0,
-                utm_source TEXT DEFAULT ''
+                utm_source TEXT DEFAULT '',
+                points INTEGER DEFAULT 0
             )
         """)
         
-        # Schema migratsiyalari (agar avval yaratilgan bo'lsa)
+        # Schema migratsiyalari (ustunlar mavjudligini tekshirish)
         cursor.execute("PRAGMA table_info(users);")
         existing_cols = [row["name"] for row in cursor.fetchall()]
         if "is_banned" not in existing_cols:
@@ -44,6 +45,8 @@ def _init_db_sync():
             cursor.execute("ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT 0;")
         if "utm_source" not in existing_cols:
             cursor.execute("ALTER TABLE users ADD COLUMN utm_source TEXT DEFAULT '';")
+        if "points" not in existing_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN points INTEGER DEFAULT 0;")
         
         # 2. Foydalanuvchilar harakatlari jurnali (Activity Logs)
         cursor.execute("""
@@ -76,6 +79,8 @@ def _init_db_sync():
         # Indekslar (Tezkor qidiruv uchun)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_is_banned ON users(is_banned);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_points ON users(points);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_referrer ON users(referrer_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_created_at ON activity_logs(created_at);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_logs_user_id ON activity_logs(user_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_greetings_user ON greetings(user_id);")
@@ -85,8 +90,13 @@ async def init_db():
     """Ma'lumotlar bazasini asinxron ishga tushirish."""
     await asyncio.to_thread(_init_db_sync)
 
-def _upsert_user_sync(user_id: int, username: Optional[str], first_name: str, last_name: Optional[str], referrer_id: int = 0, utm_source: str = ""):
+def _upsert_user_sync(user_id: int, username: Optional[str], first_name: str, last_name: Optional[str], referrer_id: int = 0, utm_source: str = "") -> Tuple[bool, int]:
+    """
+    Foydalanuvchini qo'shish yoki yangilash.
+    Qaytaradi: (is_new_user: bool, bonus_referrer_id: int)
+    """
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    bonus_referrer_id = 0
     with _get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
@@ -97,16 +107,148 @@ def _upsert_user_sync(user_id: int, username: Optional[str], first_name: str, la
                 SET username = ?, first_name = ?, last_name = ?, last_active = ?
                 WHERE user_id = ?
             """, (username, first_name, last_name, now_str, user_id))
+            conn.commit()
+            return False, 0
         else:
+            # Yangi foydalanuvchi!
+            # Agar referral mavjud bo'lsa va o'zini o'zi taklif qilmagan bo'lsa
+            actual_ref = referrer_id if (referrer_id > 0 and referrer_id != user_id) else 0
+            
             cursor.execute("""
-                INSERT INTO users (user_id, username, first_name, last_name, created_at, last_active, greetings_count, is_banned, referrer_id, utm_source)
-                VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-            """, (user_id, username, first_name, last_name, now_str, now_str, referrer_id, utm_source))
+                INSERT INTO users (user_id, username, first_name, last_name, created_at, last_active, greetings_count, is_banned, referrer_id, utm_source, points)
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 5)
+            """, (user_id, username, first_name, last_name, now_str, now_str, actual_ref, utm_source))
+            
+            # Yangi foydalanuvchiga boshlang'ich +5 ball bonus!
+            if actual_ref > 0:
+                cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (actual_ref,))
+                ref_exists = cursor.fetchone()
+                if ref_exists:
+                    # Referrerga +10 ball beriladi!
+                    cursor.execute("UPDATE users SET points = points + 10 WHERE user_id = ?", (actual_ref,))
+                    cursor.execute("""
+                        INSERT INTO activity_logs (user_id, username, full_name, action, details, created_at)
+                        VALUES (?, '', 'Referral System', 'REF_BONUS', ?, ?)
+                    """, (actual_ref, f"Do'st taklif qildi (+10 ball, yangi foydalanuvchi: {user_id})", now_str))
+                    bonus_referrer_id = actual_ref
+
+            conn.commit()
+            return True, bonus_referrer_id
+
+async def upsert_user(user_id: int, username: Optional[str], first_name: str, last_name: Optional[str], referrer_id: int = 0, utm_source: str = "") -> Tuple[bool, int]:
+    """Foydalanuvchi ma'lumotlarini qo'shish yoki yangilash."""
+    return await asyncio.to_thread(_upsert_user_sync, user_id, username, first_name, last_name, referrer_id, utm_source)
+
+def _add_user_points_sync(user_id: int, points: int, reason: str = ""):
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET points = points + ?, last_active = ? WHERE user_id = ?", (points, now_str, user_id))
+        if reason:
+            cursor.execute("""
+                INSERT INTO activity_logs (user_id, username, full_name, action, details, created_at)
+                VALUES (?, '', 'Ball Tizimi', 'ADD_POINTS', ?, ?)
+            """, (user_id, f"+{points} ball ({reason})", now_str))
         conn.commit()
 
-async def upsert_user(user_id: int, username: Optional[str], first_name: str, last_name: Optional[str], referrer_id: int = 0, utm_source: str = ""):
-    """Foydalanuvchi ma'lumotlarini qo'shish yoki yangilash."""
-    await asyncio.to_thread(_upsert_user_sync, user_id, username, first_name, last_name, referrer_id, utm_source)
+async def add_user_points(user_id: int, points: int, reason: str = ""):
+    """Foydalanuvchiga ball qo'shish."""
+    await asyncio.to_thread(_add_user_points_sync, user_id, points, reason)
+
+def _get_user_profile_sync(user_id: int) -> Dict[str, Any]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        user_row = cursor.fetchone()
+        if not user_row:
+            return {}
+        
+        user_dict = dict(user_row)
+        
+        # Taklif qilgan do'stlari soni
+        cursor.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ?", (user_id,))
+        ref_count = cursor.fetchone()[0]
+        user_dict["ref_count"] = ref_count
+
+        points = user_dict.get("points", 0)
+        
+        # Daraja / Unvon hisoblash
+        if points < 20:
+            rank_title = "🥉 Oddiy Mehmon"
+            next_rank = "🥈 Mahalla Faoli"
+            needed = 20 - points
+        elif points < 50:
+            rank_title = "🥈 Mahalla Faoli"
+            next_rank = "🥇 Saxiy Homiy"
+            needed = 50 - points
+        elif points < 100:
+            rank_title = "🥇 Saxiy Homiy"
+            next_rank = "👑 Toshkent Avtoriteti (VIP)"
+            needed = 100 - points
+        else:
+            rank_title = "👑 Toshkent Avtoriteti (VIP)"
+            next_rank = "🏆 Maksimal Daraja!"
+            needed = 0
+
+        user_dict["rank_title"] = rank_title
+        user_dict["next_rank"] = next_rank
+        user_dict["points_needed"] = needed
+        
+        return user_dict
+
+async def get_user_profile(user_id: int) -> Dict[str, Any]:
+    """Foydalanuvchi profil ma'lumotlari, ballari va unvonini olish."""
+    return await asyncio.to_thread(_get_user_profile_sync, user_id)
+
+def _get_leaderboard_sync(limit: int = 10) -> List[Dict[str, Any]]:
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT user_id, username, first_name, last_name, points, greetings_count,
+                   (SELECT COUNT(*) FROM users u2 WHERE u2.referrer_id = users.user_id) as ref_count
+            FROM users
+            WHERE is_banned = 0
+            ORDER BY points DESC, ref_count DESC
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cursor.fetchall()]
+
+async def get_leaderboard(limit: int = 10) -> List[Dict[str, Any]]:
+    """Eng ko'p ball to'plagan Top 10 peshqadamlar ro'yxati."""
+    return await asyncio.to_thread(_get_leaderboard_sync, limit)
+
+def _can_claim_daily_fortune_sync(user_id: int) -> bool:
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    action_key = f"FORTUNE_{today_str}"
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id FROM activity_logs 
+            WHERE user_id = ? AND action = ?
+            LIMIT 1
+        """, (user_id, action_key))
+        return cursor.fetchone() is None
+
+async def can_claim_daily_fortune(user_id: int) -> bool:
+    """Foydalanuvchi bugun o'z bashoratini olgan-olmaganligini tekshirish."""
+    return await asyncio.to_thread(_can_claim_daily_fortune_sync, user_id)
+
+def _claim_daily_fortune_sync(user_id: int):
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    action_key = f"FORTUNE_{today_str}"
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO activity_logs (user_id, username, full_name, action, details, created_at)
+            VALUES (?, '', 'Kunlik Bashorat', ?, 'Bugungi kunlik bashorat olindi (+1 ball)', ?)
+        """, (user_id, action_key, now_str))
+        cursor.execute("UPDATE users SET points = points + 1, last_active = ? WHERE user_id = ?", (now_str, user_id))
+        conn.commit()
+
+async def claim_daily_fortune(user_id: int):
+    """Kunlik bashorat bonusini berish va qayd qilish."""
+    await asyncio.to_thread(_claim_daily_fortune_sync, user_id)
 
 def _is_user_banned_sync(user_id: int) -> bool:
     with _get_connection() as conn:
@@ -142,7 +284,6 @@ def _log_activity_sync(user_id: int, username: Optional[str], full_name: str, ac
             VALUES (?, ?, ?, ?, ?, ?)
         """, (user_id, username, full_name, action, details, now_str))
         
-        # Foydalanuvchining last_active vaqtini yangilash
         cursor.execute("UPDATE users SET last_active = ? WHERE user_id = ?", (now_str, user_id))
         conn.commit()
 
@@ -159,8 +300,9 @@ def _save_greeting_sync(user_id: int, category: str, character: str, recipient_n
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (user_id, category, character, recipient_name, profession, sender_name, text, now_str))
         
+        # Tabrik yaratganda +2 ball beriladi!
         cursor.execute("""
-            UPDATE users SET greetings_count = greetings_count + 1, last_active = ? WHERE user_id = ?
+            UPDATE users SET greetings_count = greetings_count + 1, points = points + 2, last_active = ? WHERE user_id = ?
         """, (now_str, user_id))
         conn.commit()
 
@@ -252,33 +394,29 @@ def _get_statistics_sync() -> Dict[str, Any]:
     with _get_connection() as conn:
         cursor = conn.cursor()
         
-        # Jami foydalanuvchilar
         cursor.execute("SELECT COUNT(*) FROM users")
         total_users = cursor.fetchone()[0]
         
-        # Bugun qo'shilganlar
         cursor.execute("SELECT COUNT(*) FROM users WHERE created_at LIKE ?", (f"{today_str}%",))
         today_users = cursor.fetchone()[0]
         
-        # Bugun faol bo'lganlar
         cursor.execute("SELECT COUNT(*) FROM users WHERE last_active LIKE ?", (f"{today_str}%",))
         active_today = cursor.fetchone()[0]
         
-        # Jami tabriklar
         cursor.execute("SELECT COUNT(*) FROM greetings")
         total_greetings = cursor.fetchone()[0]
         
-        # Bugun yaratilgan tabriklar
         cursor.execute("SELECT COUNT(*) FROM greetings WHERE created_at LIKE ?", (f"{today_str}%",))
         today_greetings = cursor.fetchone()[0]
         
-        # Jami jurnal harakatlari
         cursor.execute("SELECT COUNT(*) FROM activity_logs")
         total_logs = cursor.fetchone()[0]
         
-        # Bloklanganlar
         cursor.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1")
         banned_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT SUM(points) FROM users")
+        total_points = cursor.fetchone()[0] or 0
         
         return {
             "total_users": total_users,
@@ -287,7 +425,8 @@ def _get_statistics_sync() -> Dict[str, Any]:
             "total_greetings": total_greetings,
             "today_greetings": today_greetings,
             "total_logs": total_logs,
-            "banned_users": banned_users
+            "banned_users": banned_users,
+            "total_points": total_points
         }
 
 async def get_statistics() -> Dict[str, Any]:
@@ -314,7 +453,7 @@ def _get_recent_users_sync(limit: int = 10) -> List[Dict[str, Any]]:
     with _get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT user_id, username, first_name, last_name, created_at, last_active, greetings_count, is_banned
+            SELECT user_id, username, first_name, last_name, created_at, last_active, greetings_count, is_banned, points
             FROM users
             ORDER BY last_active DESC
             LIMIT ?
@@ -335,6 +474,10 @@ def _get_user_info_sync(user_id: int) -> Optional[Dict[str, Any]]:
             return None
         
         user_dict = dict(user_row)
+        
+        # Taklif qilganlari
+        cursor.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ?", (user_id,))
+        user_dict["ref_count"] = cursor.fetchone()[0]
         
         # Oxirgi 5 ta harakati
         cursor.execute("""
@@ -371,14 +514,14 @@ def _export_users_csv_sync(filepath: str) -> str:
     with _get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT user_id, username, first_name, last_name, created_at, last_active, greetings_count, is_banned, referrer_id, utm_source
+            SELECT user_id, username, first_name, last_name, created_at, last_active, greetings_count, is_banned, referrer_id, utm_source, points
             FROM users ORDER BY created_at DESC
         """)
         rows = cursor.fetchall()
         
         with open(filepath, mode="w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["User ID", "Username", "Ismi", "Familiyasi", "Qo'shilgan vaqti", "Oxirgi faolligi", "Tabriklar soni", "Bloklangan", "Taklif qilgan ID", "UTM Manba"])
+            writer.writerow(["User ID", "Username", "Ismi", "Familiyasi", "Qo'shilgan vaqti", "Oxirgi faolligi", "Tabriklar soni", "Bloklangan", "Taklif qilgan ID", "UTM Manba", "Ballar"])
             for r in rows:
                 writer.writerow([
                     r["user_id"], 
@@ -390,7 +533,8 @@ def _export_users_csv_sync(filepath: str) -> str:
                     r["greetings_count"],
                     r["is_banned"],
                     r["referrer_id"],
-                    r["utm_source"]
+                    r["utm_source"],
+                    r["points"]
                 ])
                 
     return filepath
